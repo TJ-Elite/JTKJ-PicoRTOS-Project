@@ -36,17 +36,12 @@
 // Other definitions.
 #define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(morseTable[0]))
 
-// Function prototypes.
-static void gpio_callback(uint gpio, uint32_t events);
-
-static void input_task(void *arg);
-static void logic_task(void *arg);
-static void print_task(void *arg);
-
-static void interpretAccelerometer();
-static void interpretLight();
-static const char *charToMorse(char c);
-static char morseToChar(const char *morse);
+typedef enum accelerometerStatus
+{
+    ICM42670_NOT_INITIALIZED = 1,
+    ICM42670_INITIALIZED,
+    ACCEL_INITIALIZED
+} AccelerometerStatus;
 
 typedef enum morseState
 {
@@ -74,6 +69,20 @@ typedef struct
     const char character;
     const char *morseCode;
 } MorsePair;
+
+// Function prototypes.
+static void gpio_callback(uint gpio, uint32_t events);
+
+static void input_task(void *arg);
+static void logic_task(void *arg);
+static void print_task(void *arg);
+
+static int initAccelerometer();
+static void readAccelerometer();
+static void interpretAccelerometer();
+static void interpretLight();
+static const char *charToMorse(char c);
+static char morseToChar(const char *morse);
 
 // Constants
 static const MorsePair morseTable[] = {
@@ -115,6 +124,7 @@ static const MorsePair morseTable[] = {
     {'9', "----."}};
 
 // Global variables.
+AccelerometerStatus accelStatus = ICM42670_NOT_INITIALIZED;
 MorseState morseState = IDLE;
 InputMode inputMode = ACCEL_INPUT;
 
@@ -197,19 +207,18 @@ static void input_task(void *arg)
 {
     (void)arg;
 
-    init_veml6030(); // Initialize the light sensor.
-    // TODO: Initialize the accelerometer.
+    init_veml6030();           // Initialize the light sensor.
+    (void)initAccelerometer(); // Initialize the accelerometer.
 
     while (1)
     {
         if (ACCEL_INPUT == inputMode)
         {
-            // TODO: Read the accelerometer values and store them.
-            // We may want to average the values over a few samples to reduce noise.
+            readAccelerometer();
         }
         else
         {
-            // Get reading from the light sensor.
+            // Get a reading from the light sensor.
             ambientLight = veml6030_read_light();
         }
 
@@ -381,6 +390,45 @@ static void usbTask(void *arg) {
                                  // Do not add vTaskDelay.
     }
 }*/
+
+// This function checks whether the accelerometer has been initialized and is running.
+// If not, it tries to initialize it.
+// Returns 0 if the accelerometer is running.
+static int initAccelerometer()
+{
+    if (ICM42670_NOT_INITIALIZED == accelStatus)
+    {
+        // Try to initialize the ICM42670. Returns 0 on success.
+        if (init_ICM42670())
+        {
+            return 1; // ICM42670 initialization failed.
+        }
+        accelStatus = ICM42670_INITIALIZED;
+    }
+
+    if (ICM42670_INITIALIZED == accelStatus)
+    {
+        // Try to start the accelerometer. Returns 0 on success.
+        if (ICM42670_start_with_default_values())
+        {
+            return 2; // Failed to start the accelerometer.
+        }
+        accelStatus = ACCEL_INITIALIZED;
+    }
+
+    return 0; // Accelerometer is running.
+}
+
+static void readAccelerometer()
+{
+    // First we check that the acceleremeter is running. If not, we try to initialize it.
+    if (initAccelerometer())
+    {
+        return;
+    }
+
+    // TODO: Read the accelerometer values and store them.
+}
 
 static void interpretAccelerometer()
 {
