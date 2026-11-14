@@ -31,6 +31,9 @@
 #define NO_LIGHT_VALUE UINT32_MAX
 #define MAX_LIGHT_VALUE (UINT32_MAX - 1U)
 
+// Other definitions.
+#define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(MorsePair))
+
 // Function prototypes.
 static void gpio_callback(uint gpio, uint32_t events);
 static void input_task(void *arg);
@@ -59,6 +62,51 @@ typedef struct
     char symbol;        // Decoded symbol ('.' or '-')
     uint32_t timestamp; // The time, when the symbol was processed.
 } morse_event_t;
+
+typedef struct
+{
+    const char character;
+    const char *morseCode;
+} MorsePair;
+
+// Constants
+static const MorsePair morseTable[] = {
+    {'A', ".-"},
+    {'B', "-..."},
+    {'C', "-.-."},
+    {'D', "-.."},
+    {'E', "."},
+    {'F', "..-."},
+    {'G', "--."},
+    {'H', "...."},
+    {'I', ".."},
+    {'J', ".---"},
+    {'K', "-.-"},
+    {'L', ".-.."},
+    {'M', "--"},
+    {'N', "-."},
+    {'O', "---"},
+    {'P', ".--."},
+    {'Q', "--.-"},
+    {'R', ".-."},
+    {'S', "..."},
+    {'T', "-"},
+    {'U', "..-"},
+    {'V', "...-"},
+    {'W', ".--"},
+    {'X', "-..-"},
+    {'Y', "-.--"},
+    {'Z', "--.."},
+    {'0', "-----"},
+    {'1', ".----"},
+    {'2', "..---"},
+    {'3', "...--"},
+    {'4', "....-"},
+    {'5', "....."},
+    {'6', "-...."},
+    {'7', "--..."},
+    {'8', "---.."},
+    {'9', "----."}};
 
 // Global variables.
 MorseState morseState = IDLE;
