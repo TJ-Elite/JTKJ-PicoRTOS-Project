@@ -25,6 +25,9 @@
 #define CHAR_PAUSE_MS 600U // If the pause between presses for button 1 are longer than this morseState changes to CHARACTER_DONE.
 #define WORD_PAUSE_MS 1200 // If the pause between presses for button 1 are longer than this morseState changes to WORD_DONE.
 
+// Accelerometer definitions.
+#define NO_ACCEL_VALUE -100.0
+
 // Light sensor definitions.
 // Values below DASH_LUX are dots, values between DASH_LUX and SPACE_LUX are dashes.
 // Values above SPACE_LUX but not NO_LIGHT_VALUE are spaces.
@@ -33,7 +36,10 @@
 #define NO_LIGHT_VALUE UINT32_MAX
 #define MAX_LIGHT_VALUE (UINT32_MAX - 1U)
 
-// Other definitions.
+// Morse code definitions.
+#define DOT '.'
+#define DASH '-'
+#define SPACE ' '
 #define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(morseTable[0]))
 
 typedef enum accelerometerStatus
@@ -128,6 +134,9 @@ AccelerometerStatus accelStatus = ICM42670_NOT_INITIALIZED;
 MorseState morseState = IDLE;
 InputMode inputMode = ACCEL_INPUT;
 
+static float accel_x = NO_ACCEL_VALUE;
+static float accel_y = NO_ACCEL_VALUE;
+static float accel_z = NO_ACCEL_VALUE;
 static uint32_t ambientLight = NO_LIGHT_VALUE;
 char outputBuffer[128];
 uint8_t bufferIndex = 0;
@@ -162,11 +171,11 @@ static void gpio_callback(uint gpio, uint32_t events)
                 // defines if the symbol is a '.' or a '-' depending on the press time
                 if (press_duration < pdMS_TO_TICKS(DOT_MAX_MS))
                 {
-                    latest_event.symbol = '.';
+                    latest_event.symbol = DOT;
                 }
                 else
                 {
-                    latest_event.symbol = '-';
+                    latest_event.symbol = DASH;
                 }
                 b1_pressed = true;
                 latest_event.timestamp = time_now;
@@ -262,7 +271,7 @@ static void logic_task(void *arg)
             {
             case IDLE:
                 // If dot or dash put in outputBuffer.
-                if (symbol == '.' || symbol == '-')
+                if (symbol == DOT || symbol == DASH)
                 {
                     // Checks that the index doesn't go over the size of the array.
                     if (bufferIndex < 127)
@@ -295,7 +304,7 @@ static void logic_task(void *arg)
                 // Checks that the index doesn't go over the size of the array.
                 if (bufferIndex < 126)
                 {
-                    outputBuffer[bufferIndex++] = ' ';
+                    outputBuffer[bufferIndex++] = SPACE;
                     outputBuffer[bufferIndex++] = symbol;
                 }
                 morseState = READING_CHARACTER;
@@ -312,9 +321,9 @@ static void logic_task(void *arg)
         // If the pause goes longer adds a space to the buffer and morseState changes to WORD_DONE.
         else if (morseState == CHARACTER_DONE && (current_tick - last_action_tick > pdMS_TO_TICKS(WORD_PAUSE_MS)))
         {
-            if (bufferIndex < 127 && bufferIndex > 0 && outputBuffer[bufferIndex - 1] != ' ')
+            if (bufferIndex < 127 && bufferIndex > 0 && outputBuffer[bufferIndex - 1] != SPACE)
             {
-                outputBuffer[bufferIndex++] = ' ';
+                outputBuffer[bufferIndex++] = SPACE;
             }
             morseState = WORD_DONE;
         }
@@ -342,7 +351,7 @@ static void logic_task(void *arg)
             b2_l_pressed = false;
 
             // Checks if the buffer has at least two symbols and if they are spaces.
-            if (bufferIndex >= 2 && outputBuffer[bufferIndex - 1] == ' ' && outputBuffer[bufferIndex - 2] == ' ')
+            if (bufferIndex >= 2 && outputBuffer[bufferIndex - 1] == SPACE && outputBuffer[bufferIndex - 2] == SPACE)
             {
                 if (bufferIndex < 127)
                 {
@@ -409,6 +418,7 @@ static int initAccelerometer()
     if (ICM42670_INITIALIZED == accelStatus)
     {
         // Try to start the accelerometer. Returns 0 on success.
+        // The default values for the accelerometer are output data rate 100 Hz, and full-scale range: ±4 g.
         if (ICM42670_start_with_default_values())
         {
             return 2; // Failed to start the accelerometer.
@@ -427,7 +437,17 @@ static void readAccelerometer()
         return;
     }
 
-    // TODO: Read the accelerometer values and store them.
+    float ax = 0.0, ay = 0.0, az = 0.0, gx = 0.0, gy = 0.0, gz = 0.0, t = 0.0;
+    // Read the sensor values. Returns 0 on success.
+    if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t))
+    {
+        return;
+    }
+
+    // Store the accelerometer values.
+    accel_x = ax;
+    accel_y = ay;
+    accel_z = az;
 }
 
 static void interpretAccelerometer()
@@ -444,15 +464,15 @@ static void interpretLight()
 
     if (ambientLight < DASH_LUX)
     {
-        latest_event.symbol = '.';
+        latest_event.symbol = DOT;
     }
     else if (ambientLight < SPACE_LUX)
     {
-        latest_event.symbol = '-';
+        latest_event.symbol = DASH;
     }
     else
     {
-        latest_event.symbol = ' ';
+        latest_event.symbol = SPACE;
     }
 
     latest_event.timestamp = xTaskGetTickCount();
