@@ -19,6 +19,10 @@
 #define NO_TIME 0U
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
+#define LONG_PRESS_MS 800U // Long press for button 2.
+#define DOT_MAX_MS 250U // Presses on button 1, that are shorter than this, are dots.
+#define CHAR_PAUSE_MS 600U // If the pause between presses for button 1 are longer than this morseState changes to CHARACTER_DONE.
+#define WORD_PAUSE_MS 1200 // If the pause between presses for button 1 are longer than this morseState changes to WORD_DONE.
 
 // Light sensor definitions.
 #define NO_LIGHT_VALUE UINT32_MAX
@@ -40,6 +44,12 @@ typedef enum inputMode
     LIGHT_INPUT
 } InputMode;
 
+// Struct for morse-events.
+typedef struct {
+    char symbol; // Decoded symbol ('.' or '-')
+    uint32_t timestamp; // The time, when the symbol was processed.
+} morse_event_t;
+
 // Global variables.
 MorseState morseState = IDLE;
 InputMode inputMode = ACCEL_INPUT;
@@ -49,36 +59,63 @@ char outputBuffer[128];
 uint8_t bufferIndex = 0;
 
 volatile bool b1_pressed = false;
-volatile bool b2_pressed = false;
+volatile bool b2_s_pressed = false; // Short press for button 2
+volatile bool b2_l_pressed = false; // Long press for button 2
 volatile TickType_t b1_press_time = NO_TIME;
 volatile TickType_t b2_press_time = NO_TIME;
+static volatile morse_event_t latest_event = { '\0', 0};
 
 static void gpio_callback(uint gpio, uint32_t events)
 {
-    // Only process falling edge events.
-    if (!(events & GPIO_IRQ_EDGE_FALL))
-    {
-        return;
-    }
 
     TickType_t time_now = xTaskGetTickCountFromISR();
 
     if (BUTTON1 == gpio)
     {
-        // Only accept new button presses after the debounce time has elapsed.
-        if (time_now - b1_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
-        {
-            b1_pressed = true;
-            b1_press_time = time_now;
+        if (events & GPIO_IRQ_EDGE_FALL) {
+            // Only accept new button presses after the debounce time has elapsed.
+            if (time_now - b1_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
+            {
+                b1_press_time = time_now;
+            }
+        }
+        else if (events & GPIO_IRQ_EDGE_RISE) {
+            TickType_t press_duration = time_now - b1_press_time;
+
+            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS)) {
+                // defines if the symbol is a '.' or a '-' depending on the press time
+                if (press_duration < pdMS_TO_TICKS(DOT_MAX_MS)) {
+                    latest_event.symbol = '.';
+                }
+                else {
+                    latest_event.symbol = '-';
+                }
+                b1_pressed = true;
+                latest_event.timestamp = time_now;
+            }
         }
     }
     else if (BUTTON2 == gpio)
     {
-        // Only accept new button presses after the debounce time has elapsed.
-        if (time_now - b2_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
-        {
-            b2_pressed = true;
-            b2_press_time = time_now;
+        if (events & GPIO_IRQ_EDGE_FALL) {
+            // Only accept new button presses after the debounce time has elapsed.
+            if (time_now - b2_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
+            {
+                b2_press_time = time_now;
+            }
+        }
+        else if (events & GPIO_IRQ_EDGE_RISE) {
+            TickType_t press_duration = time_now - b2_press_time;
+
+            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS)) {
+                // Determines if button 2 was pressed for a short or a long time.
+                if (press_duration < pdMS_TO_TICKS(LONG_PRESS_MS)) {
+                    b2_s_pressed = true;
+                }
+                else {
+                    b2_l_pressed = true;
+                }
+            }
         }
     }
 }
@@ -111,9 +148,13 @@ static void input_task(void *arg)
 static void logic_task(void *arg)
 {
     (void)arg;
+    // The tick the last action was done in.
+    TickType_t last_action_tick = xTaskGetTickCount();
 
     while (1)
     {
+        TickType_t current_tick = xTaskGetTickCount();
+        
         // Button 1 records the Morse input from the user.
         if (b1_pressed)
         {
@@ -121,7 +162,8 @@ static void logic_task(void *arg)
             // TODO: Record the Morse input. Different cases for accelerometer and light sensor input modes.
             // Processing the Morse symbol
 
-            char symbol; // Initializing the detected symbol here, when there is a way to detected it.
+            char symbol = latest_event.symbol;
+            last_action_tick = current_tick;
             
             switch (morseState) {
                 case IDLE:
@@ -136,57 +178,47 @@ static void logic_task(void *arg)
                     break;
             
                 case READING_CHARACTER:
-                    // If dot or dash put in outputBuffer.
-                    if (symbol == '.' || symbol == '-') {
-                        // Checks that the index doesn't go over the size of the array.
-                        if (bufferIndex < 127) {
-                            outputBuffer[bufferIndex++] = symbol;
-                        }
+                    // Checks that the index doesn't go over the size of the array.
+                    if (bufferIndex < 127) {
+                        outputBuffer[bufferIndex++] = symbol;
                     }
-                    // If space decode, store and clear buffer.
-                    else if (symbol == ' ') {
-                        morseState = CHARACTER_DONE;
-                    }
+                    morseState = READING_CHARACTER;
                     break;
 
                 case CHARACTER_DONE:
-                    // If dot or dash put in outputBuffer.
-                    if (symbol == '.' || symbol == '-') {
-                        // Checks that the index doesn't go over the size of the array.
-                        if (bufferIndex < 127) {
-                            outputBuffer[bufferIndex++] = symbol;
-                        }
-                        morseState = READING_CHARACTER;
+                    // Checks that the index doesn't go over the size of the array.
+                    if (bufferIndex < 127) {
+                        outputBuffer[bufferIndex++] = symbol;
                     }
-                    // If space word is done.
-                    else if (symbol == ' ') {
-                        morseState = WORD_DONE;
-                    }
+                    morseState = READING_CHARACTER;
                     break;
 
                 case WORD_DONE:
-                    // If dot or dash put in outputBuffer and store space.
-                    if (symbol == '.' || symbol == '-') {
-                        // Checks that the index doesn't go over the size of the array.
-                        if (bufferIndex < 126) {
-                            outputBuffer[bufferIndex++] = ' ';
-                            outputBuffer[bufferIndex++] = symbol;
-                        }
-                        morseState = READING_CHARACTER;
+                    // Checks that the index doesn't go over the size of the array.
+                    if (bufferIndex < 126) {
+                        outputBuffer[bufferIndex++] = ' ';
+                        outputBuffer[bufferIndex++] = symbol;
                     }
-                    //If space form and send message.
-                    else if (symbol == ' ') {
-                    bufferIndex = 0;
-                    morseState = IDLE;
-                    }
+                    morseState = READING_CHARACTER;
                     break;
             }
         }
+        // If there's a small pause between the symbols, morseState changes to CHARACTER_DONE.
+        else if (morseState == READING_CHARACTER && (current_tick - last_action_tick > pdMS_TO_TICKS(CHAR_PAUSE_MS))) {
+            morseState = CHARACTER_DONE;
+        }
+        // If the pause goes longer adds a space to the buffer and morseState changes to WORD_DONE.
+        else if (morseState == CHARACTER_DONE && (current_tick - last_action_tick > pdMS_TO_TICKS(WORD_PAUSE_MS))) {
+            if (bufferIndex < 127 && bufferIndex > 0 && outputBuffer[bufferIndex - 1] != ' ') {
+                outputBuffer[bufferIndex++] = ' ';
+            }
+            morseState = WORD_DONE;
+        }
 
-        // Button 2 switches between the two input modes.
-        if (b2_pressed)
+        // Button 2 short press: switches between the two input modes.
+        if (b2_s_pressed)
         {
-            b2_pressed = false;
+            b2_s_pressed = false;
 
             if (ACCEL_INPUT == inputMode)
             {
@@ -197,6 +229,23 @@ static void logic_task(void *arg)
             {
                 inputMode = ACCEL_INPUT;
                 rgb_led_write(0, 255, 0); // Set the RGB LED to green to indicate accelerometer input mode.
+            }
+        }
+
+        // Button 2 long press: inserts a newline and ends the message if there are two spaces before it.
+        if (b2_l_pressed)
+        {
+            b2_l_pressed = false;
+
+            // Checks if the buffer has at least two symbols and if they are spaces.
+            if (bufferIndex >= 2 && outputBuffer[bufferIndex - 1] == ' ' && outputBuffer[bufferIndex - 2] == ' ') {
+                if (bufferIndex < 127) {
+                    outputBuffer[bufferIndex++] = '\n';
+                }
+
+                // Message ends.
+                bufferIndex = 0;
+                morseState = IDLE;
             }
         }
 
@@ -274,8 +323,8 @@ int main()
     rgb_led_write(0, 255, 0); // Set the RGB LED initially to green to indicate accelerometer input mode.
 
     // Register the generic callback.
-    gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_FALL, true, gpio_callback);
-    gpio_set_irq_enabled(BUTTON2, GPIO_IRQ_EDGE_FALL, true);
+    gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, gpio_callback);
+    gpio_set_irq_enabled(BUTTON2, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true);
 
     TaskHandle_t hButtonTask, hInputTask, hLogicTask, hPrintTask, hUSB = NULL;
 
