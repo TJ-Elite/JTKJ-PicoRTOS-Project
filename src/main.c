@@ -1,3 +1,5 @@
+#include <ctype.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -32,15 +34,19 @@
 #define MAX_LIGHT_VALUE (UINT32_MAX - 1U)
 
 // Other definitions.
-#define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(MorsePair))
+#define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(morseTable[0]))
 
 // Function prototypes.
 static void gpio_callback(uint gpio, uint32_t events);
+
 static void input_task(void *arg);
 static void logic_task(void *arg);
 static void print_task(void *arg);
+
 static void interpretAccelerometer();
 static void interpretLight();
+static const char *charToMorse(char c);
+static char morseToChar(const char *morse);
 
 typedef enum morseState
 {
@@ -402,6 +408,36 @@ static void interpretLight()
     }
 
     latest_event.timestamp = xTaskGetTickCount();
+}
+
+static const char *charToMorse(char c)
+{
+    c = toupper((unsigned char)c);
+
+    for (size_t i = 0; i < MORSE_TABLE_SIZE; ++i)
+    {
+        if (morseTable[i].character == c)
+        {
+            return morseTable[i].morseCode;
+        }
+    }
+
+    // Return NULL if character not found in the Morse table.
+    return NULL;
+}
+
+static char morseToChar(const char *morse)
+{
+    for (size_t i = 0; i < MORSE_TABLE_SIZE; ++i)
+    {
+        if (strcmp(morseTable[i].morseCode, morse) == 0)
+        {
+            return morseTable[i].character;
+        }
+    }
+
+    // Return '\0' if Morse code not found in the Morse table.
+    return '\0';
 }
 
 int main()
