@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,7 +27,8 @@
 #define WORD_PAUSE_MS 1200 // If the pause between presses for button 1 are longer than this morseState changes to WORD_DONE.
 
 // Accelerometer definitions.
-#define NO_ACCEL_VALUE -100.0
+#define NO_ACCEL_VALUE (-100.0f)
+#define ACCEL_THRESHOLD 0.8
 
 // Light sensor definitions.
 // Values below DASH_LUX are dots, values between DASH_LUX and SPACE_LUX are dashes.
@@ -86,6 +88,7 @@ static void print_task(void *arg);
 static int initAccelerometer();
 static void readAccelerometer();
 static void interpretAccelerometer();
+static void clearAccelReadings();
 static void interpretLight();
 static const char *charToMorse(char c);
 static char morseToChar(const char *morse);
@@ -452,16 +455,60 @@ static void readAccelerometer()
 
 static void interpretAccelerometer()
 {
-    // TODO
-}
-
-static void interpretLight()
-{
-    if (ambientLight != NO_LIGHT_VALUE)
+    // Return if there are no accelerometer readings.
+    if (NO_ACCEL_VALUE == accel_x || NO_ACCEL_VALUE == accel_y || NO_ACCEL_VALUE == accel_z)
     {
         return;
     }
 
+    // Normalize accelerometer readings to compensate for situations where the sensor readings
+    // are a bit off and aren't close to 1.0 g when laying flat as expected.
+    float vector_magnitude = sqrt(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
+    accel_x /= vector_magnitude;
+    accel_y /= vector_magnitude;
+    accel_z /= vector_magnitude;
+
+    // If one axis has a value above the threshold, interpret it as the corresponding Morse input.
+    if (fabs(accel_z) > ACCEL_THRESHOLD)
+    {
+        latest_event.symbol = DASH;
+    }
+    else if (fabs(accel_x) > ACCEL_THRESHOLD)
+    {
+        latest_event.symbol = DOT;
+    }
+    else if (fabs(accel_y) > ACCEL_THRESHOLD)
+    {
+        latest_event.symbol = SPACE;
+    }
+    else
+    {
+        clearAccelReadings();
+        return;
+    }
+
+    latest_event.timestamp = xTaskGetTickCount();
+
+    // Clear the accelerometer readings to prevent processing the same values multiple times.
+    clearAccelReadings();
+}
+
+static void clearAccelReadings()
+{
+    accel_x = NO_ACCEL_VALUE;
+    accel_y = NO_ACCEL_VALUE;
+    accel_z = NO_ACCEL_VALUE;
+}
+
+static void interpretLight()
+{
+    // Return if there is no light reading.
+    if (NO_LIGHT_VALUE == ambientLight)
+    {
+        return;
+    }
+
+    // Interpret the light level as either a dot, dash or space.
     if (ambientLight < DASH_LUX)
     {
         latest_event.symbol = DOT;
@@ -476,6 +523,7 @@ static void interpretLight()
     }
 
     latest_event.timestamp = xTaskGetTickCount();
+    ambientLight = NO_LIGHT_VALUE; // Clear the light value to prevent processing the same value multiple times.
 }
 
 static const char *charToMorse(char c)
