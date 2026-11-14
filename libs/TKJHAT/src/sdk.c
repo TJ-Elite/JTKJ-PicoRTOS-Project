@@ -531,45 +531,51 @@ void init_veml6030() {
     sleep_ms(10);
 }
 
-// Read light level from VEML6030
-// Ligt in LUX
-// Note: sampling time should be > IT -> in this case it has been 100ms by defintion. 
-uint32_t veml6030_read_light() {
+// Reads the light level from VEML6030.
+// The returned value is in lux.
+// https://www.raspberrypi.com/documentation/pico-sdk/hardware.html#group_hardware_i2c
+// https://www.vishay.com/docs/84367/designingveml6030.pdf
+uint32_t veml6030_read_light()
+{
+    uint8_t txBuffer[1] = {0x04}; // We reserve one byte to send data through the I2C.
+    uint8_t rxBuffer[2];          // We reserve two bytes to receive data from the I2C.
+    double light_value = 0.0;
 
-    // Exercise 2: In order to get the illuminance we need to read the value of the VEML6030_ALS_REG (see VEML6030 datasheet)
-    //            Use functions i2c_write_blocking and i2c_read_blocking to collect illuminance data.
-    //            These functions are found in the Pico SDK:
-    //            https://www.raspberrypi.com/documentation/pico-sdk/hardware.html#group_hardware_i2c
-    //            The i2c that you must use is i2c_default.  
-    //            from the sensor. Make necessary bitwise operation to store the results in a register of 16 bits.
-    //            Multiply the value by the adequate value considering Integration Time of 100 ms and Gain of 1/8
-    //            using data of page 5 of VEML6030 design application document: https://www.vishay.com/docs/84367/designingveml6030.pdf
-    //            Finally, store the value in the variable luxVal_uncorrected.
-    //
-    // Tehtävä 2: Saadaksemme valaistusvoimakkuuden meidän tulee lukea VEML6030_ALS_REG -rekisterin arvo (katso VEML6030-datalehti).
-    //            Käytä funktioita i2c_write_blocking ja i2c_read_blocking valaistusvoimakkuusdatan keräämiseen.
-    //            Nämä funktiot löytyvät Pico SDK:sta:
-    //            https://www.raspberrypi.com/documentation/pico-sdk/hardware.html#group_hardware_i2c
-    //            Käytettävä i2c-väylä on i2c_default.
-    //            Tee tarvittavat bittikohtaiset operaatiot tallettaksesi tuloksen 16-bittiseen rekisteriin.
-    //            Kerro arvo sopivalla kertoimella huomioiden 100 ms integraatioaika ja vahvistus 1/8
-    //            käyttäen VEML6030-sovellussuunnitteluasiakirjan sivun 5 tietoja:https://www.vishay.com/docs/84367/designingveml6030.pdf
-    //            Lopuksi tallenna arvo muuttujaan luxVal_uncorrected.
-  
-    uint32_t luxVal_uncorrected = 0; 
-    if (luxVal_uncorrected>1000){
-        // Polynomial is pulled from pg 10 of the datasheet. 
+    if (i2c_write_blocking(i2c_default, 0x10, txBuffer, 1, true) != PICO_ERROR_GENERIC)
+    {
+        if (i2c_read_blocking(i2c_default, 0x10, rxBuffer, 2, false) != PICO_ERROR_GENERIC)
+        {
+            uint16_t raw_value = (rxBuffer[1] << 8) | rxBuffer[0];
+            light_value = raw_value * 0.5376; // Integration Time 100 ms and Gain 1/8.
+        }
+        else
+        {
+            return UINT32_MAX; // Returning this value indicates light value couldn't be read.
+        }
+    }
+    else
+    {
+        return UINT32_MAX; // Returning this value indicates light value couldn't be read.
+    }
+
+    uint32_t luxVal_uncorrected = (uint32_t)light_value;
+    if (luxVal_uncorrected > 1000)
+    {
+        // Polynomial is pulled from page 10 of the datasheet.
         // See https://github.com/sparkfun/SparkFun_Ambient_Light_Sensor_Arduino_Library/blob/efde0817bd6857863067bd1653a2cfafe6c68732/src/SparkFun_VEML6030_Ambient_Light_Sensor.cpp#L409
-        uint32_t luxVal = (.00000000000060135 * (pow(luxVal_uncorrected, 4))) - 
-                            (.0000000093924 * (pow(luxVal_uncorrected, 3))) + 
-                            (.000081488 * (pow(luxVal_uncorrected,2))) + 
-                            (1.0023 * luxVal_uncorrected);
+        uint32_t luxVal = (.00000000000060135 * (pow(luxVal_uncorrected, 4))) -
+                          (.0000000093924 * (pow(luxVal_uncorrected, 3))) +
+                          (.000081488 * (pow(luxVal_uncorrected, 2))) +
+                          (1.0023 * luxVal_uncorrected);
+        // The value UINT32_MAX is reserved to signal an error, so we limit the max value to UINT32_MAX - 1.
+        if (UINT32_MAX == luxVal)
+        {
+            --luxVal;
+        }
         return luxVal;
     }
-    return  luxVal_uncorrected;
+    return luxVal_uncorrected;
 }
-
-
 
 //This method might be utility method in the future.
 static uint16_t _veml6030_read_register(uint8_t reg) {
