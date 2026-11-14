@@ -252,7 +252,7 @@ static void logic_task(void *arg)
         // Button 1 records the Morse input from the user.
         if (b1_pressed)
         {
-            b1_pressed != b1_pressed;
+            b1_pressed = !b1_pressed;
 
             // Try to interpret the latest sensor measurement as a dot, dash or space.
             switch (inputMode)
