@@ -10,6 +10,9 @@
 #include <queue.h>
 #include <task.h>
 
+#include <tusb.h>
+#include "usbSerialDebug/helper.h"
+
 #include "tkjhat/sdk.h"
 
 // Exercise 4. Include the libraries necessaries to use the USB-serial-debug, and TinyUSB.
@@ -101,6 +104,7 @@ static void input_task(void *arg);
 static void logic_task(void *arg);
 static void print_task(void *arg);
 static void ui_task(void *arg);
+static void usbTask(void *arg);
 
 static int initAccelerometer();
 static void readAccelerometer();
@@ -453,14 +457,14 @@ static void ui_task(void *arg)
 
 // Exercise 4: Uncomment the following line to activate the TinyUSB library.
 
-/*
+
 static void usbTask(void *arg) {
     (void)arg;
     while (1) {
         tud_task();              // With FreeRTOS wait for events
                                  // Do not add vTaskDelay.
     }
-}*/
+}
 
 // This function checks whether the accelerometer has been initialized and is running.
 // If not, it tries to initialize it.
@@ -651,7 +655,7 @@ int main()
     //             In CMakeLists.txt add usb_serial_debug to target_link_libraries.
     //             In CMakeLists.txt deactivate pico_enable_stdio_usb
 
-    stdio_init_all();
+    // stdio_init_all();
 
     // Uncomment this lines if you want to wait till the serial monitor is connected
     /*while (!stdio_usb_connected()){
@@ -676,16 +680,16 @@ int main()
     TaskHandle_t hLogicTask = NULL;
     TaskHandle_t hPrintTask = NULL;
     TaskHandle_t hUiTask = NULL;
-    // TaskHandle_t hUSB = NULL;
+    TaskHandle_t hUSB = NULL;
 
     // Exercise 4: Uncomment this xTaskCreate to create the task that enables dual USB communication.
 
-    /*
+    
     xTaskCreate(usbTask, "usb", 2048, NULL, 3, &hUSB);
     #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(hUSB, 1u << 0);
     #endif
-    */
+    
 
     // Create the tasks with xTaskCreate
     BaseType_t result = xTaskCreate(input_task,         // (en) Task function
@@ -739,6 +743,9 @@ int main()
         printf("UI task creation failed.\n");
         return 0;
     }
+
+    tusb_init();
+    usb_serial_init();
 
     // Start the scheduler (never returns)
     vTaskStartScheduler();
