@@ -159,6 +159,8 @@ static float accel_x = NO_ACCEL_VALUE;
 static float accel_y = NO_ACCEL_VALUE;
 static float accel_z = NO_ACCEL_VALUE;
 static uint32_t ambientLight = NO_LIGHT_VALUE;
+static bool newTextToPrint = false;
+static char receivedText[((CHARS_PER_LINE) * (MAX_LINES)) + 1] = ""; // Also reserves space for '\0'.
 char outputBuffer[128];
 uint8_t bufferIndex = 0;
 
@@ -444,7 +446,11 @@ static void ui_task(void *arg)
 
     while (1)
     {
-        // TODO
+        if (newTextToPrint)
+        {
+            newTextToPrint = !newTextToPrint;
+            printToScreen(receivedText);
+        }
 
         // Do not remove this.
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -589,8 +595,8 @@ static void interpretLight()
 // Prints text to the display. Handles wrapping long string to multiple lines. Clears prior content.
 static void printToScreen(const char *text)
 {
-    // Return if given a NULL pointer.
-    if (!text)
+    // Return if given a NULL pointer or the string is empty.
+    if (!text || !(*text))
     {
         return;
     }
