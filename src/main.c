@@ -450,6 +450,7 @@ static void ui_task(void *arg)
         {
             newTextToPrint = !newTextToPrint;
             printToScreen(receivedText);
+            receivedText[0] = '\0'; // "Erase" the written string.
         }
 
         // Do not remove this.
