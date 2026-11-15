@@ -41,6 +41,8 @@
 // Display definitions. Dimensions are in pixels at font scaling 1.
 // https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf
 #define DISPLAY_WIDTH 128U
+#define DISPLAY_HEIGHT 64U
+
 #define CHAR_WIDTH 5U
 #define CHAR_SPACING 1U
 #define CHARS_PER_LINE ((DISPLAY_WIDTH) / ((CHAR_WIDTH) + (CHAR_SPACING)))
@@ -48,8 +50,9 @@
 #define CHAR_HEIGHT 8U
 #define LINE_SPACING 1U
 #define LINE_HEIGHT ((CHAR_HEIGHT) + (LINE_SPACING))
-#define DISPLAY_HEIGHT 64U
 #define MAX_LINES ((DISPLAY_HEIGHT) / (LINE_HEIGHT))
+
+#define LINE_START_X ((int16_t)0)
 
 // Morse code definitions.
 #define DOT '.'
@@ -104,6 +107,7 @@ static void readAccelerometer();
 static void interpretAccelerometer();
 static inline void clearAccelReadings();
 static void interpretLight();
+static void printToScreen(const char *text);
 static const char *charToMorse(char c);
 static char morseToChar(const char *morse);
 
@@ -580,6 +584,32 @@ static void interpretLight()
 
     latest_event.timestamp = xTaskGetTickCount();
     ambientLight = NO_LIGHT_VALUE; // Clear the light value to prevent processing the same value multiple times.
+}
+
+// Prints text to the display. Handles wrapping long string to multiple lines. Clears prior content.
+static void printToScreen(const char *text)
+{
+    // Return if given a NULL pointer.
+    if (!text)
+    {
+        return;
+    }
+
+    // Clear the old content.
+    clear_display();
+
+    int16_t y = 0;
+    while (*text && (uint32_t)y <= (uint32_t)((DISPLAY_HEIGHT) - (LINE_HEIGHT)))
+    {
+        char line[CHARS_PER_LINE + 1U];      // Takes into account the space needed for the termination character.
+        strncpy(line, text, CHARS_PER_LINE); // If the copied string contains '\0', the code still works.
+        line[CHARS_PER_LINE] = '\0';
+
+        write_text_xy(LINE_START_X, y, line);
+
+        text += strlen(line); // strlen() excludes the null terminator.
+        y += LINE_HEIGHT;
+    }
 }
 
 static const char *charToMorse(char c)
