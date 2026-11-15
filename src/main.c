@@ -14,6 +14,7 @@
 
 // Exercise 4. Include the libraries necessaries to use the USB-serial-debug, and TinyUSB.
 
+// Default stack size for the tasks. It can be reduced to 1024 if task is not using lot of memory.
 #define DEFAULT_STACK_SIZE 2048
 #define CDC_ITF_TX 1
 
@@ -36,6 +37,19 @@
 #define SPACE_LUX 1000U
 #define NO_LIGHT_VALUE UINT32_MAX
 #define MAX_LIGHT_VALUE (UINT32_MAX - 1U)
+
+// Display definitions. Dimensions are in pixels at font scaling 1.
+// https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf
+#define DISPLAY_WIDTH 128U
+#define CHAR_WIDTH 5U
+#define CHAR_SPACING 1U
+#define CHARS_PER_LINE ((DISPLAY_WIDTH) / ((CHAR_WIDTH) + (CHAR_SPACING)))
+
+#define CHAR_HEIGHT 8U
+#define LINE_SPACING 1U
+#define LINE_HEIGHT ((CHAR_HEIGHT) + (LINE_SPACING))
+#define DISPLAY_HEIGHT 64U
+#define MAX_LINES ((DISPLAY_HEIGHT) / (LINE_HEIGHT))
 
 // Morse code definitions.
 #define DOT '.'
@@ -83,6 +97,7 @@ static void gpio_callback(uint gpio, uint32_t events);
 static void input_task(void *arg);
 static void logic_task(void *arg);
 static void print_task(void *arg);
+static void ui_task(void *arg);
 
 static int initAccelerometer();
 static void readAccelerometer();
@@ -370,9 +385,6 @@ static void logic_task(void *arg)
             }
         }
 
-        // Do not remove this.
-        vTaskDelay(pdMS_TO_TICKS(10));
-
         // Both buttons: inserts a newline and ends the message.
         if (both_pressed)
         {
@@ -394,6 +406,9 @@ static void logic_task(void *arg)
                 morseState = IDLE;
             }
         }
+
+        // Do not remove this.
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -414,6 +429,21 @@ static void print_task(void *arg)
 
         // Do not remove this.
         vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+static void ui_task(void *arg)
+{
+    (void)arg;
+
+    init_display();
+
+    while (1)
+    {
+        // TODO
+
+        // Do not remove this.
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
@@ -612,7 +642,11 @@ int main()
     gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, gpio_callback);
     gpio_set_irq_enabled(BUTTON2, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true);
 
-    TaskHandle_t hButtonTask, hInputTask, hLogicTask, hPrintTask, hUSB = NULL;
+    TaskHandle_t hInputTask = NULL;
+    TaskHandle_t hLogicTask = NULL;
+    TaskHandle_t hPrintTask = NULL;
+    TaskHandle_t hUiTask = NULL;
+    // TaskHandle_t hUSB = NULL;
 
     // Exercise 4: Uncomment this xTaskCreate to create the task that enables dual USB communication.
 
@@ -660,6 +694,19 @@ int main()
     if (result != pdPASS)
     {
         printf("Print task creation failed.\n");
+        return 0;
+    }
+
+    result = xTaskCreate(ui_task,            // (en) Task function
+                         "ui",               // (en) Name of the task
+                         DEFAULT_STACK_SIZE, // (en) Size of the stack for this task (in words). Generally 1024 or 2048
+                         NULL,               // (en) Arguments of the task
+                         2,                  // (en) Priority of this task
+                         &hUiTask);          // (en) A handle to control the execution of this task
+
+    if (result != pdPASS)
+    {
+        printf("UI task creation failed.\n");
         return 0;
     }
 
