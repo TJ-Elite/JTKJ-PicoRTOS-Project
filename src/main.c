@@ -21,12 +21,13 @@
 #define NO_TIME 0U
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
-#define MAX_TIME_BETWEEN_MS 80U // If the time between pressing one button and then pressing the other is shorter than this, 
+#define MAX_TIME_BETWEEN_MS 80U // If the time between pressing one button and then pressing the other is shorter than this,
 // then both buttons are being pressed.
 
 // Accelerometer definitions.
 #define NO_ACCEL_VALUE (-100.0f)
-#define ACCEL_THRESHOLD 0.8
+// Normalized accelerometer threshold value. Should be in the range 0.5 < ACCEL_THRESHOLD < 1.0.
+#define ACCEL_THRESHOLD 0.8f
 
 // Light sensor definitions.
 // Values below DASH_LUX are dots, values between DASH_LUX and SPACE_LUX are dashes.
@@ -86,7 +87,7 @@ static void print_task(void *arg);
 static int initAccelerometer();
 static void readAccelerometer();
 static void interpretAccelerometer();
-static void clearAccelReadings();
+static inline void clearAccelReadings();
 static void interpretLight();
 static const char *charToMorse(char c);
 static char morseToChar(const char *morse);
@@ -171,12 +172,15 @@ static void gpio_callback(uint gpio, uint32_t events)
             b1_down = false;
             TickType_t press_duration = time_now - b1_press_time;
 
-            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS)) {
+            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
+            {
                 // Checks if button 2 was pressed around the same time as button 1.
-                if (b2_down || (time_now - b2_press_time < pdMS_TO_TICKS(MAX_TIME_BETWEEN_MS))) {
+                if (b2_down || (time_now - b2_press_time < pdMS_TO_TICKS(MAX_TIME_BETWEEN_MS)))
+                {
                     both_pressed = true; // If it was then both buttons were pressed.
                 }
-                else {
+                else
+                {
                     b1_pressed = true; // Else only button 1 was pressed.
                 }
             }
@@ -201,10 +205,12 @@ static void gpio_callback(uint gpio, uint32_t events)
             if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
             {
                 // Checks if button 1 was pressed around the same time as button 2.
-                if (b1_down || (time_now - b1_press_time < pdMS_TO_TICKS(MAX_TIME_BETWEEN_MS))) {
+                if (b1_down || (time_now - b1_press_time < pdMS_TO_TICKS(MAX_TIME_BETWEEN_MS)))
+                {
                     both_pressed = true; // If it was then both buttons were pressed.
                 }
-                else {
+                else
+                {
                     b2_pressed = true; // Else only button 2 was pressed.
                 }
             }
@@ -271,7 +277,8 @@ static void logic_task(void *arg)
                 if (symbol == DOT || symbol == DASH)
                 {
                     size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1) {
+                    if (len < sizeof(current_morse) - 1)
+                    {
                         current_morse[len] = symbol;
                         current_morse[len + 1] = '\0';
                     }
@@ -284,15 +291,18 @@ static void logic_task(void *arg)
                 if (symbol == DOT || symbol == DASH)
                 {
                     size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1) {
+                    if (len < sizeof(current_morse) - 1)
+                    {
                         current_morse[len] = symbol;
                         current_morse[len + 1] = '\0';
                     }
                 }
                 // Space: decode letter, store it in outputBuffer and morseState changes to CHARACTER_DONE.
-                else if (symbol == SPACE) {
+                else if (symbol == SPACE)
+                {
                     char decoded = morseToChar(current_morse);
-                    if (decoded != '\0' && bufferIndex < 127) {
+                    if (decoded != '\0' && bufferIndex < 127)
+                    {
                         outputBuffer[bufferIndex++] = decoded;
                     }
                     current_morse[0] = '\0';
@@ -305,35 +315,39 @@ static void logic_task(void *arg)
                 if (symbol == DOT || symbol == DASH)
                 {
                     size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1) {
+                    if (len < sizeof(current_morse) - 1)
+                    {
                         current_morse[len] = symbol;
                         current_morse[len + 1] = '\0';
                     }
                     morseState = READING_CHARACTER;
                 }
                 // If space morseState changes to WORD_DONE.
-                else if (symbol == SPACE) {
+                else if (symbol == SPACE)
+                {
                     morseState = WORD_DONE;
                 }
                 break;
 
             case WORD_DONE:
-            // If dot or dash adds a space to the outputBuffer and then starts a new word putting the symbol to the temporary string.
-                if (symbol == DOT || symbol == DASH) {
+                // If dot or dash adds a space to the outputBuffer and then starts a new word putting the symbol to the temporary string.
+                if (symbol == DOT || symbol == DASH)
+                {
                     // Checks that the index doesn't go over the size of the array and that the last letter wasn't a space.
                     if (bufferIndex < 126 && outputBuffer[bufferIndex - 1] != SPACE)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
                     }
                     size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1) {
+                    if (len < sizeof(current_morse) - 1)
+                    {
                         current_morse[len] = symbol;
                         current_morse[len + 1] = '\0';
                     }
                     morseState = READING_CHARACTER;
                 }
                 break;
-            
+
             default:
                 break;
             }
@@ -452,6 +466,7 @@ static void readAccelerometer()
     }
 
     float ax = 0.0, ay = 0.0, az = 0.0, gx = 0.0, gy = 0.0, gz = 0.0, t = 0.0;
+
     // Read the sensor values. Returns 0 on success.
     if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t))
     {
@@ -472,28 +487,28 @@ static void interpretAccelerometer()
         return;
     }
 
-    // Normalize accelerometer readings to compensate for situations where the sensor readings
-    // are a bit off and aren't close to 1.0 g when laying flat as expected.
-    float vector_magnitude = sqrt(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
-    accel_x /= vector_magnitude;
-    accel_y /= vector_magnitude;
-    accel_z /= vector_magnitude;
+    // Calculate the vector magnitude and scale the normalized threshold value with it.
+    // This helps compensate for situations where the accelerometer readings are a bit off and
+    // don't produce 1.0 g when laying perfectly flat as expected.
+    float vector_magnitude = sqrtf(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
+    float threshold = ACCEL_THRESHOLD * vector_magnitude;
 
     // If one axis has a value above the threshold, interpret it as the corresponding Morse input.
-    if (fabs(accel_z) > ACCEL_THRESHOLD)
+    if (fabsf(accel_z) > threshold)
     {
         latest_event.symbol = DASH;
     }
-    else if (fabs(accel_x) > ACCEL_THRESHOLD)
+    else if (fabsf(accel_x) > threshold)
     {
         latest_event.symbol = DOT;
     }
-    else if (fabs(accel_y) > ACCEL_THRESHOLD)
+    else if (fabsf(accel_y) > threshold)
     {
         latest_event.symbol = SPACE;
     }
     else
     {
+        // The device orientation deviates too much from the valid positions.
         clearAccelReadings();
         return;
     }
@@ -504,7 +519,7 @@ static void interpretAccelerometer()
     clearAccelReadings();
 }
 
-static void clearAccelReadings()
+static inline void clearAccelReadings()
 {
     accel_x = NO_ACCEL_VALUE;
     accel_y = NO_ACCEL_VALUE;
