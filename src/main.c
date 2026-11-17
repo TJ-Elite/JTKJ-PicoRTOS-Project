@@ -87,7 +87,7 @@ typedef enum inputMode
 // Struct for morse-events.
 typedef struct
 {
-    char symbol;        // Decoded symbol ('.' or '-')
+    char symbol;        // Decoded symbol (dot, dash or space)
     uint32_t timestamp; // The time, when the symbol was processed.
 } morse_event_t;
 
@@ -271,6 +271,7 @@ static void logic_task(void *arg)
 {
     (void)arg;
     static char current_morse[8] = ""; // Temporary buffer for one letter(stores symbols that are decoded in to the letter).
+    static uint8_t morse_index = 0; // Keeps track of the current position in the temporary buffer.
 
     while (1)
     {
@@ -301,11 +302,10 @@ static void logic_task(void *arg)
                 // If dot or dash, put in the temporary string and morseState changes to READING_CHARACTER.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1)
+                    if (morse_index < sizeof(current_morse) - 1) 
                     {
-                        current_morse[len] = symbol;
-                        current_morse[len + 1] = '\0';
+                        current_morse[morse_index++] = symbol;
+                        current_morse[morse_index] = '\0';
                     }
                     morseState = READING_CHARACTER;
                 }
@@ -315,11 +315,10 @@ static void logic_task(void *arg)
                 // If dot or dash, put in the temporary string.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1)
+                    if (morse_index < sizeof(current_morse) - 1) 
                     {
-                        current_morse[len] = symbol;
-                        current_morse[len + 1] = '\0';
+                        current_morse[morse_index++] = symbol;
+                        current_morse[morse_index] = '\0';
                     }
                 }
                 // Space: decode letter, store it in outputBuffer and morseState changes to CHARACTER_DONE.
@@ -331,19 +330,19 @@ static void logic_task(void *arg)
                         outputBuffer[bufferIndex++] = decoded;
                     }
                     current_morse[0] = '\0';
+                    morse_index = 0;
                     morseState = CHARACTER_DONE;
                 }
                 break;
 
             case CHARACTER_DONE:
-                // If dot or dash put in the temporary string amd morseState changes to READING_CHARACTER.
+                // If dot or dash put in the temporary string and morseState changes to READING_CHARACTER.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1)
+                    if (morse_index < sizeof(current_morse) - 1) 
                     {
-                        current_morse[len] = symbol;
-                        current_morse[len + 1] = '\0';
+                        current_morse[morse_index++] = symbol;
+                        current_morse[morse_index] = '\0';
                     }
                     morseState = READING_CHARACTER;
                 }
@@ -363,11 +362,10 @@ static void logic_task(void *arg)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
                     }
-                    size_t len = strlen(current_morse);
-                    if (len < sizeof(current_morse) - 1)
+                    if (morse_index < sizeof(current_morse) - 1) 
                     {
-                        current_morse[len] = symbol;
-                        current_morse[len + 1] = '\0';
+                        current_morse[morse_index++] = symbol;
+                        current_morse[morse_index] = '\0';
                     }
                     morseState = READING_CHARACTER;
                 }
@@ -413,6 +411,7 @@ static void logic_task(void *arg)
                 // Message ends.
                 bufferIndex = 0;
                 current_morse[0] = '\0';
+                morse_index = 0;
                 morseState = IDLE;
             }
         }
