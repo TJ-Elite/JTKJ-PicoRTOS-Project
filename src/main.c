@@ -84,6 +84,13 @@ typedef enum inputMode
     LIGHT_INPUT
 } InputMode;
 
+typedef struct
+{
+    uint32_t timestamp_ms;
+    InputMode mode;
+    uint32_t illuminance;
+} sensor_data_t;
+
 // Struct for morse-events.
 typedef struct
 {
@@ -158,6 +165,8 @@ static const MorsePair morseTable[] = {
 AccelerometerStatus accelStatus = ICM42670_NOT_INITIALIZED;
 MorseState morseState = IDLE;
 InputMode inputMode = ACCEL_INPUT;
+
+static QueueHandle_t sensorDataQueue = NULL;
 
 static float accel_x = NO_ACCEL_VALUE;
 static float accel_y = NO_ACCEL_VALUE;
@@ -260,6 +269,17 @@ static void input_task(void *arg)
         {
             // Get a reading from the light sensor.
             ambientLight = veml6030_read_light();
+
+            sensor_data_t data = {
+                .timestamp_ms = to_ms_since_boot(get_absolute_time()),
+                .mode = LIGHT_INPUT,
+                .illuminance = ambientLight
+            };
+
+            if (sensorDataQueue != NULL)
+            {
+                xQueueSend(sensorDataQueue, &data, 0);
+            }
         }
 
         // Do not remove this.
@@ -302,7 +322,7 @@ static void logic_task(void *arg)
                 // If dot or dash, put in the temporary string and morseState changes to READING_CHARACTER.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    if (morse_index < sizeof(current_morse) - 1) 
+                    if (morse_index < sizeof(current_morse) - 1)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
@@ -315,7 +335,7 @@ static void logic_task(void *arg)
                 // If dot or dash, put in the temporary string.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    if (morse_index < sizeof(current_morse) - 1) 
+                    if (morse_index < sizeof(current_morse) - 1)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
@@ -339,7 +359,7 @@ static void logic_task(void *arg)
                 // If dot or dash put in the temporary string and morseState changes to READING_CHARACTER.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    if (morse_index < sizeof(current_morse) - 1) 
+                    if (morse_index < sizeof(current_morse) - 1)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
@@ -362,7 +382,7 @@ static void logic_task(void *arg)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
                     }
-                    if (morse_index < sizeof(current_morse) - 1) 
+                    if (morse_index < sizeof(current_morse) - 1)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
@@ -408,6 +428,17 @@ static void logic_task(void *arg)
                     outputBuffer[bufferIndex] = '\0';
                 }
 
+                // Send the message via USB
+                usb_serial_print(outputBuffer);
+
+                // FEEDBACK FOR SENDING: Toggle red LED and play buzzer tone
+                toggle_red_led();
+                buzzer_play_tone(440, 1000); // Play 440 Hz tone for 1000 ms
+
+                vTaskDelay(pdMS_TO_TICKS(1000));
+
+                toggle_red_led();
+
                 // Message ends.
                 bufferIndex = 0;
                 current_morse[0] = '\0';
@@ -424,20 +455,56 @@ static void logic_task(void *arg)
 static void print_task(void *arg)
 {
     (void)arg;
+    char rx_buffer[64];
+    char csv_buf[64];
+    sensor_data_t data;
 
     while (1)
     {
-        // Exercise 4. Use usb_serial_print() instead of printf() for debug output
-        //             produced after the USB serial library has been initialized.
-        //             Do not replace error messages that can execute before usb_serial_init().
-        //             Use the TinyUSB library to send data through the other serial port (CDC 1).
-        //             You can use the functions at https://github.com/hathach/tinyusb/blob/master/src/class/cdc/cdc_device.h
-        //             You can find an example at hello_dual_cdc
-        //             The data written using this should be provided using CSV format:
-        //             timestamp, illuminance
+        //  1. HANDLE RECEPTION 
+        // Check if data has been received from the computer via USB
+        if (tud_cdc_connected() && tud_cdc_available())
+        {
+            uint32_t count = tud_cdc_read(rx_buffer, sizeof(rx_buffer) - 1);
+            if (count > 0)
+            {
+                rx_buffer[count] = '\0';
 
-        // Do not remove this.
-        vTaskDelay(pdMS_TO_TICKS(1000));
+                // FEEDBACK FOR RECEPTION: Toggle red LED and play higher buzzer tone (880 Hz)
+                toggle_red_led();
+                buzzer_play_tone(880, 1000);
+
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                
+                toggle_red_led();
+
+                // Print debug information to CDC 0 port
+                usb_serial_print("__[RX]: ");
+                usb_serial_print(rx_buffer);
+                usb_serial_print("\n");
+            }
+        }
+
+        //  2. SEND CSV DATA (timestamp, illuminance)
+        if (xQueueReceive(sensorDataQueue, &data, pdMS_TO_TICKS(10)) == pdPASS)
+        {
+            if (data.mode == LIGHT_INPUT)
+            {
+                snprintf(csv_buf, sizeof(csv_buf), "%lu,%lu\r\n",
+                         (unsigned long)data.timestamp_ms,
+                         (unsigned long)data.illuminance);
+
+                // Send data via CDC 1 channel to the computer
+                if (tud_cdc_n_connected(CDC_ITF_TX))
+                {
+                    tud_cdc_n_write(CDC_ITF_TX, csv_buf, strlen(csv_buf));
+                    tud_cdc_n_write_flush(CDC_ITF_TX);
+                }
+            }
+        }
+
+            // Do not remove this.
+            vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -671,11 +738,12 @@ int main()
     init_hat_sdk();
     sleep_ms(300); // Wait some time so initialization of USB and hat is done.
 
-    // Initialize the buttons and LEDs.
+    // Initialize the buttons, the buzzer and the LEDs.
     init_sw1();
     init_sw2();
     init_red_led();
     init_rgb_led();
+    init_buzzer();
     rgb_led_write(0, 255, 0); // Set the RGB LED initially to green to indicate accelerometer input mode.
 
     // Register the generic callback.
@@ -690,12 +758,20 @@ int main()
 
     // Exercise 4: Uncomment this xTaskCreate to create the task that enables dual USB communication.
 
-    
+    sensorDataQueue = xQueueCreate(32, sizeof(sensor_data_t));
+
+    if (sensorDataQueue == NULL)
+    {
+        printf("Sensor data queue creation failed.\n");
+        return 0;
+    }
+
+
     xTaskCreate(usbTask, "usb", 2048, NULL, 3, &hUSB);
     #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(hUSB, 1u << 0);
     #endif
-    
+
 
     // Create the tasks with xTaskCreate
     BaseType_t result = xTaskCreate(input_task,         // (en) Task function
@@ -729,7 +805,7 @@ int main()
                          DEFAULT_STACK_SIZE, // (en) Size of the stack for this task (in words). Generally 1024 or 2048
                          NULL,               // (en) Arguments of the task
                          2,                  // (en) Priority of this task
-                         &hPrintTask);       // (en) A handle to control the execution of this task
+                         &hPrintTask);       // (en) A handle to control the execution of this task  
 
     if (result != pdPASS)
     {
