@@ -25,7 +25,7 @@
 #define NO_TIME 0U
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
-#define MAX_TIME_BETWEEN_MS 80U // If the time between pressing one button and then pressing the other is shorter than this,
+#define MAX_TIME_BETWEEN_MS 250U // If the time between pressing one button and then pressing the other is shorter than this,
 // then both buttons are being pressed.
 
 // Accelerometer definitions.
