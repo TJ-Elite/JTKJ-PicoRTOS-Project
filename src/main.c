@@ -273,8 +273,7 @@ static void input_task(void *arg)
             sensor_data_t data = {
                 .timestamp_ms = to_ms_since_boot(get_absolute_time()),
                 .mode = LIGHT_INPUT,
-                .illuminance = ambientLight
-            };
+                .illuminance = ambientLight};
 
             if (sensorDataQueue != NULL)
             {
@@ -291,7 +290,7 @@ static void logic_task(void *arg)
 {
     (void)arg;
     static char current_morse[8] = ""; // Temporary buffer for one letter(stores symbols that are decoded in to the letter).
-    static uint8_t morse_index = 0; // Keeps track of the current position in the temporary buffer.
+    static uint8_t morse_index = 0;    // Keeps track of the current position in the temporary buffer.
 
     while (1)
     {
@@ -461,7 +460,7 @@ static void print_task(void *arg)
 
     while (1)
     {
-        //  1. HANDLE RECEPTION 
+        //  1. HANDLE RECEPTION
         // Check if data has been received from the computer via USB
         if (tud_cdc_connected() && tud_cdc_available())
         {
@@ -475,7 +474,7 @@ static void print_task(void *arg)
                 buzzer_play_tone(880, 1000);
 
                 vTaskDelay(pdMS_TO_TICKS(1000));
-                
+
                 toggle_red_led();
 
                 // Print debug information to CDC 0 port
@@ -503,8 +502,8 @@ static void print_task(void *arg)
             }
         }
 
-            // Do not remove this.
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        // Do not remove this.
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -530,12 +529,13 @@ static void ui_task(void *arg)
 
 // Exercise 4: Uncomment the following line to activate the TinyUSB library.
 
-
-static void usbTask(void *arg) {
+static void usbTask(void *arg)
+{
     (void)arg;
-    while (1) {
-        tud_task();              // With FreeRTOS wait for events
-                                 // Do not add vTaskDelay.
+    while (1)
+    {
+        tud_task(); // With FreeRTOS wait for events
+                    // Do not add vTaskDelay.
     }
 }
 
@@ -766,12 +766,10 @@ int main()
         return 0;
     }
 
-
     xTaskCreate(usbTask, "usb", 2048, NULL, 3, &hUSB);
-    #if (configNUMBER_OF_CORES > 1)
-        vTaskCoreAffinitySet(hUSB, 1u << 0);
-    #endif
-
+#if (configNUMBER_OF_CORES > 1)
+    vTaskCoreAffinitySet(hUSB, 1u << 0);
+#endif
 
     // Create the tasks with xTaskCreate
     BaseType_t result = xTaskCreate(input_task,         // (en) Task function
@@ -805,7 +803,7 @@ int main()
                          DEFAULT_STACK_SIZE, // (en) Size of the stack for this task (in words). Generally 1024 or 2048
                          NULL,               // (en) Arguments of the task
                          2,                  // (en) Priority of this task
-                         &hPrintTask);       // (en) A handle to control the execution of this task  
+                         &hPrintTask);       // (en) A handle to control the execution of this task
 
     if (result != pdPASS)
     {
