@@ -39,6 +39,10 @@
 #define NO_LIGHT_VALUE UINT32_MAX
 #define MAX_LIGHT_VALUE (UINT32_MAX - 1U)
 
+// Buzzer definitions.
+#define BUZZER_FREQ_HZ 4000
+#define CONFIRM_DURATION_MS 300
+
 // Display definitions. Dimensions are in pixels at font scaling 1.
 // https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf
 #define DISPLAY_WIDTH 128U
@@ -55,7 +59,10 @@
 
 #define MAX_RECEIVED_CHARS ((CHARS_PER_LINE) * (MAX_LINES))
 // Also reserves space for '\0'.
-#define RECEIVED_TEXT_SIZE ((MAX_RECEIVED_CHARS) + 1)
+#define RECEIVED_TEXT_SIZE (MAX_RECEIVED_CHARS + 1)
+// Reserves enough space for the maximum number of characters the screen can fit at once expressed in Morse code,
+// including the spaces between characters. Also reserves space for the final '\0' even in the worst case.
+#define INPUT_BUZZER_SIZE (MAX_RECEIVED_CHARS * (MAX_MORSE_LENGTH + 1))
 
 #define LINE_START_X ((int16_t)0)
 
@@ -64,6 +71,14 @@
 #define DASH '-'
 #define SPACE ' '
 #define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(morseTable[0]))
+#define MAX_MORSE_LENGTH 5
+#define MORSE_BUFFER_SIZE 8
+#define OUTPUT_BUFFER_SIZE 128
+#define OUTPUT_BUFFER_MAX_INDEX (OUTPUT_BUFFER_SIZE - 1)
+
+#if CFG_TUSB_OS != OPT_OS_FREERTOS
+#error "This should be using FREERTOS but the CFG_TUSB_OS is not OPT_OS_FREERTOS"
+#endif
 
 typedef enum accelerometerStatus
 {
@@ -86,13 +101,6 @@ typedef enum inputMode
     LIGHT_INPUT
 } InputMode;
 
-typedef struct
-{
-    uint32_t timestamp_ms;
-    InputMode mode;
-    uint32_t illuminance;
-} sensor_data_t;
-
 // Struct for morse-events.
 typedef struct
 {
@@ -109,20 +117,24 @@ typedef struct
 // Function prototypes.
 static void gpio_callback(uint gpio, uint32_t events);
 
+static void comms_task(void *arg);
 static void input_task(void *arg);
 static void logic_task(void *arg);
-static void print_task(void *arg);
 static void ui_task(void *arg);
 static void usbTask(void *arg);
 
+static inline void toggleInputMode();
+static inline void interpretInput();
 static int initAccelerometer();
 static void readAccelerometer();
 static void interpretAccelerometer();
 static inline void clearAccelReadings();
 static void interpretLight();
 static void printToScreen(const char *text);
+static int sendViaUsb();
 static const char *charToMorse(char c);
 static char morseToChar(const char *morse);
+static void decodeMessage(const char *message);
 
 // Constants
 static const MorsePair morseTable[] = {
@@ -163,12 +175,10 @@ static const MorsePair morseTable[] = {
     {'8', "---.."},
     {'9', "----."}};
 
-// Global variables.
+// Global variables
 AccelerometerStatus accelStatus = ICM42670_NOT_INITIALIZED;
 MorseState morseState = IDLE;
 InputMode inputMode = ACCEL_INPUT;
-
-static QueueHandle_t sensorDataQueue = NULL;
 
 static float accel_x = NO_ACCEL_VALUE;
 static float accel_y = NO_ACCEL_VALUE;
@@ -176,9 +186,11 @@ static float accel_z = NO_ACCEL_VALUE;
 static uint32_t ambientLight = NO_LIGHT_VALUE;
 static bool newTextToPrint = false;
 static char receivedText[RECEIVED_TEXT_SIZE] = ""; // Also reserves space for '\0'.
-char outputBuffer[128];
+static bool sendMessage = false;
+char outputBuffer[OUTPUT_BUFFER_SIZE];
 uint8_t bufferIndex = 0;
 
+// Volatile
 static volatile bool b1_pressed = false;
 static volatile bool b2_pressed = false;
 static volatile bool both_pressed = false; // Both buttons are pressed at the same time.
@@ -254,6 +266,42 @@ static void gpio_callback(uint gpio, uint32_t events)
     }
 }
 
+static void comms_task(void *arg)
+{
+    (void)arg;
+
+    char rx_buffer[INPUT_BUZZER_SIZE];
+
+    while (1)
+    {
+        // Check if data has been received from the computer via USB.
+        if (tud_cdc_connected() && tud_cdc_available())
+        {
+            uint32_t count = tud_cdc_read(rx_buffer, sizeof(rx_buffer) - 1);
+            if (count > 0)
+            {
+                rx_buffer[count] = '\0';
+                decodeMessage(rx_buffer);
+            }
+        }
+
+        // If we have an unsent message, try sending it again via USB serial.
+        if (sendMessage)
+        {
+            int result = sendViaUsb();
+
+            // Result is greater than zero when data was sent successfully.
+            if (result > 0)
+            {
+                sendMessage = !sendMessage; // Toggle sendMessage flag if sent successfully.
+            }
+        }
+
+        // Do not remove this.
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 static void input_task(void *arg)
 {
     (void)arg;
@@ -265,22 +313,13 @@ static void input_task(void *arg)
     {
         if (ACCEL_INPUT == inputMode)
         {
+            // Try to get a reading from the accelerometer.
             readAccelerometer();
         }
         else
         {
             // Get a reading from the light sensor.
             ambientLight = veml6030_read_light();
-
-            sensor_data_t data = {
-                .timestamp_ms = to_ms_since_boot(get_absolute_time()),
-                .mode = LIGHT_INPUT,
-                .illuminance = ambientLight};
-
-            if (sensorDataQueue != NULL)
-            {
-                xQueueSend(sensorDataQueue, &data, 0);
-            }
         }
 
         // Do not remove this.
@@ -291,28 +330,57 @@ static void input_task(void *arg)
 static void logic_task(void *arg)
 {
     (void)arg;
-    static char current_morse[8] = ""; // Temporary buffer for one letter(stores symbols that are decoded in to the letter).
-    static uint8_t morse_index = 0;    // Keeps track of the current position in the temporary buffer.
+    static char current_morse[MORSE_BUFFER_SIZE] = ""; // Temporary buffer for one letter(stores symbols that are decoded in to the letter).
+    static uint8_t morse_index = 0;                    // Keeps track of the current position in the temporary buffer.
 
     while (1)
     {
+        // Both buttons: Inserts a newline if preceded by two spaces and tries to send the message.
+        if (both_pressed)
+        {
+            // Clear button press flags.
+            both_pressed = false;
+            b1_pressed = false;
+            b2_pressed = false;
+
+            // Sanity check. Reset Morse state machine if we've somehow put too many thing in the buffer.
+            if (bufferIndex >= OUTPUT_BUFFER_MAX_INDEX)
+            {
+                morseState = IDLE;
+                bufferIndex = 0;
+                current_morse[0] = '\0';
+                morse_index = 0;
+            }
+            // '\n' can only be inserted and the message sent when preceded by two spaces.
+            else if (WORD_DONE == morseState)
+            {
+                outputBuffer[bufferIndex++] = '\n';
+                outputBuffer[bufferIndex] = '\0';
+
+                morseState = IDLE;
+                bufferIndex = 0;
+                current_morse[0] = '\0';
+                morse_index = 0;
+
+                // Try to send the message via USB.
+                sendMessage = true;
+                int result = sendViaUsb();
+
+                // Result is greater than zero when data was sent successfully.
+                if (result > 0)
+                {
+                    sendMessage = !sendMessage; // Toggle sendMessage flag if sent successfully.
+                }
+            }
+        }
+
         // Button 1 records the Morse input from the user.
         if (b1_pressed)
         {
             b1_pressed = false;
 
             // Try to interpret the latest sensor measurement as a dot, dash or space.
-            switch (inputMode)
-            {
-            case ACCEL_INPUT:
-                interpretAccelerometer();
-                break;
-            case LIGHT_INPUT:
-                interpretLight();
-                break;
-            default:
-                break; // Do nothing.
-            }
+            interpretInput();
 
             char symbol = latest_event.symbol;
 
@@ -346,7 +414,8 @@ static void logic_task(void *arg)
                 else if (symbol == SPACE)
                 {
                     char decoded = morseToChar(current_morse);
-                    if (decoded != '\0' && bufferIndex < 127)
+                    // The character is only stored if there's still room for '\n' and '\0' after it.
+                    if (decoded != '\0' && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
                     {
                         outputBuffer[bufferIndex++] = decoded;
                     }
@@ -379,7 +448,7 @@ static void logic_task(void *arg)
                 if (symbol == DOT || symbol == DASH)
                 {
                     // Checks that the index doesn't go over the size of the array and that the last letter wasn't a space.
-                    if (bufferIndex < 126 && outputBuffer[bufferIndex - 1] != SPACE)
+                    if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1 && outputBuffer[bufferIndex - 1] != SPACE)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
                     }
@@ -401,111 +470,11 @@ static void logic_task(void *arg)
         if (b2_pressed)
         {
             b2_pressed = false;
-
-            if (ACCEL_INPUT == inputMode)
-            {
-                inputMode = LIGHT_INPUT;
-                rgb_led_write(0, 0, 255); // Set the RGB LED to blue to indicate light sensor input mode.
-            }
-            else
-            {
-                inputMode = ACCEL_INPUT;
-                rgb_led_write(0, 255, 0); // Set the RGB LED to green to indicate accelerometer input mode.
-            }
-        }
-
-        // Both buttons: inserts a newline and ends the message.
-        if (both_pressed)
-        {
-            both_pressed = false;
-            b1_pressed = false;
-            b2_pressed = false;
-
-            if (bufferIndex > 0)
-            {
-                if (bufferIndex < 127)
-                {
-                    outputBuffer[bufferIndex++] = '\n';
-                    outputBuffer[bufferIndex] = '\0';
-                }
-
-                // Send the message via USB
-                usb_serial_print(outputBuffer);
-
-                // FEEDBACK FOR SENDING: Toggle red LED and play buzzer tone
-                toggle_red_led();
-                buzzer_play_tone(440, 1000); // Play 440 Hz tone for 1000 ms
-
-                vTaskDelay(pdMS_TO_TICKS(1000));
-
-                toggle_red_led();
-
-                // Message ends.
-                bufferIndex = 0;
-                current_morse[0] = '\0';
-                morse_index = 0;
-                morseState = IDLE;
-            }
+            toggleInputMode();
         }
 
         // Do not remove this.
         vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-static void print_task(void *arg)
-{
-    (void)arg;
-    char rx_buffer[64];
-    char csv_buf[64];
-    sensor_data_t data;
-
-    while (1)
-    {
-        //  1. HANDLE RECEPTION
-        // Check if data has been received from the computer via USB
-        if (tud_cdc_connected() && tud_cdc_available())
-        {
-            uint32_t count = tud_cdc_read(rx_buffer, sizeof(rx_buffer) - 1);
-            if (count > 0)
-            {
-                rx_buffer[count] = '\0';
-
-                // FEEDBACK FOR RECEPTION: Toggle red LED and play higher buzzer tone (880 Hz)
-                toggle_red_led();
-                buzzer_play_tone(880, 1000);
-
-                vTaskDelay(pdMS_TO_TICKS(1000));
-
-                toggle_red_led();
-
-                // Print debug information to CDC 0 port
-                usb_serial_print("__[RX]: ");
-                usb_serial_print(rx_buffer);
-                usb_serial_print("\n");
-            }
-        }
-
-        //  2. SEND CSV DATA (timestamp, illuminance)
-        if (xQueueReceive(sensorDataQueue, &data, pdMS_TO_TICKS(10)) == pdPASS)
-        {
-            if (data.mode == LIGHT_INPUT)
-            {
-                snprintf(csv_buf, sizeof(csv_buf), "%lu,%lu\r\n",
-                         (unsigned long)data.timestamp_ms,
-                         (unsigned long)data.illuminance);
-
-                // Send data via CDC 1 channel to the computer
-                if (tud_cdc_n_connected(CDC_ITF_TX))
-                {
-                    tud_cdc_n_write(CDC_ITF_TX, csv_buf, strlen(csv_buf));
-                    tud_cdc_n_write_flush(CDC_ITF_TX);
-                }
-            }
-        }
-
-        // Do not remove this.
-        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -525,7 +494,7 @@ static void ui_task(void *arg)
         }
 
         // Do not remove this.
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -539,9 +508,42 @@ static void usbTask(void *arg)
     }
 }
 
-// This function checks whether the accelerometer has been initialized and is running.
-// If not, it tries to initialize it.
-// Returns 0 if the accelerometer is running.
+static inline void toggleInputMode()
+{
+    if (ACCEL_INPUT == inputMode)
+    {
+        ambientLight = NO_LIGHT_VALUE; // Clear old value.
+        inputMode = LIGHT_INPUT;
+        rgb_led_write(0, 0, 255); // Set the RGB LED to blue to indicate light sensor input mode.
+    }
+    else
+    {
+        clearAccelReadings(); // Clear old values.
+        inputMode = ACCEL_INPUT;
+        rgb_led_write(0, 255, 0); // Set the RGB LED to green to indicate accelerometer input mode.
+    }
+}
+
+static inline void interpretInput()
+{
+    switch (inputMode)
+    {
+    case ACCEL_INPUT:
+        interpretAccelerometer();
+        break;
+    case LIGHT_INPUT:
+        interpretLight();
+        break;
+    default:
+        break; // Do nothing.
+    }
+}
+
+/**
+ * This function checks whether the accelerometer has been initialized and is running.
+ * If not, it tries to initialize it.
+ * Returns 0 if the accelerometer is running.
+ */
 static int initAccelerometer()
 {
     if (ICM42670_NOT_INITIALIZED == accelStatus)
@@ -573,7 +575,7 @@ static void readAccelerometer()
     // First we check that the acceleremeter is running. If not, we try to initialize it.
     if (initAccelerometer())
     {
-        return;
+        return; // Return if the accelerometer isn't running.
     }
 
     float ax = 0.0, ay = 0.0, az = 0.0, gx = 0.0, gy = 0.0, gz = 0.0, t = 0.0;
@@ -663,7 +665,9 @@ static void interpretLight()
     ambientLight = NO_LIGHT_VALUE; // Clear the light value to prevent processing the same value multiple times.
 }
 
-// Prints text to the display. Handles wrapping long string to multiple lines. Clears prior content.
+/**
+ * Prints text to the display. Handles wrapping long string to multiple lines. Clears prior content.
+ */
 static void printToScreen(const char *text)
 {
     // Return if given a NULL pointer or the string is empty.
@@ -687,6 +691,30 @@ static void printToScreen(const char *text)
         text += strlen(line); // strlen() excludes the null terminator.
         y += LINE_HEIGHT;
     }
+}
+
+/**
+ * Try to send the data in outputBuffer via USB.
+ * Plays a confirmation tone if successful. Code execution is blocked while the buzzer is sounding.
+ */
+static int sendViaUsb()
+{
+    uint32_t bytesWritten = 0;
+
+    if (tud_cdc_n_connected(CDC_ITF_TX))
+    {
+        // Send message to the ACM1.
+        bytesWritten = tud_cdc_n_write(CDC_ITF_TX, outputBuffer, strlen(outputBuffer));
+        bytesWritten += tud_cdc_n_write_flush(CDC_ITF_TX);
+    }
+
+    // Result is greater than zero when data was sent successfully.
+    if (bytesWritten > 0)
+    {
+        buzzer_play_tone(BUZZER_FREQ_HZ, CONFIRM_DURATION_MS); // Note: This implementation is blocking.
+    }
+
+    return bytesWritten;
 }
 
 static const char *charToMorse(char c)
@@ -719,6 +747,99 @@ static char morseToChar(const char *morse)
     return '\0';
 }
 
+/**
+ * Tries to decode the given Morse message, storing decoded characters in receivedText[].
+ * If one of the space-separated substrings isn't found in the conversion table,
+ * the decoding process ends prematurely without processing the rest of the message.
+ * newTextToPrint is set to true if at least one character was decoded successfully.
+ */
+static void decodeMessage(const char *message)
+{
+    // Return if given a NULL pointer or the string is empty.
+    if (!message || !(*message))
+    {
+        return;
+    }
+
+    char symbol[MAX_MORSE_LENGTH + 1]; // Reserves space for '\0' as well.
+    int8_t symbolIndex = 0;
+    int16_t textIndex = 0;
+
+    while (*message)
+    {
+        if (SPACE == *message)
+        {
+            // End of a Morse character.
+            if (symbolIndex > 0)
+            {
+                symbol[symbolIndex] = '\0';
+                symbolIndex = 0;
+                char c = morseToChar(symbol);
+                if ('\0' == c)
+                {
+                    break; // Stop decoding process if character couldn't be decoded.
+                }
+
+                if (textIndex < RECEIVED_TEXT_SIZE - 1)
+                {
+                    receivedText[textIndex++] = morseToChar(symbol);
+                }
+                else
+                {
+                    break; // receivedText[] is full.
+                }
+            }
+
+            // Two spaces separate words.
+            if (SPACE == *(message + 1))
+            {
+                if (textIndex < RECEIVED_TEXT_SIZE - 1)
+                {
+                    receivedText[textIndex++] = SPACE;
+                }
+                else
+                {
+                    break; // receivedText[] is full.
+                }
+
+                // Skip all additional spaces.
+                while (SPACE == *message)
+                    ++message;
+                continue; // This skips the additional ++message at the end of the loop.
+            }
+        }
+        else if (symbolIndex < MAX_MORSE_LENGTH - 1)
+        {
+            symbol[symbolIndex++] = *message;
+        }
+        else
+        {
+            // The symbol couldn't be decoded because it's too long.
+            symbolIndex = 0; // Prevents the processing step after the while loop.
+            break;
+        }
+
+        ++message;
+    }
+
+    // Handle the last Morse character.
+    if (symbolIndex > 0)
+    {
+        symbol[symbolIndex] = '\0';
+        char c = morseToChar(symbol);
+        if ('\0' != c && textIndex < RECEIVED_TEXT_SIZE - 1)
+        {
+            receivedText[textIndex++] = morseToChar(symbol);
+        }
+    }
+
+    receivedText[textIndex] = '\0';
+    if (textIndex > 0)
+    {
+        newTextToPrint = true;
+    }
+}
+
 int main()
 {
     // Comment when using TinyUSB.
@@ -744,19 +865,11 @@ int main()
     gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, gpio_callback);
     gpio_set_irq_enabled(BUTTON2, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true);
 
+    TaskHandle_t hCommsTask = NULL;
     TaskHandle_t hInputTask = NULL;
     TaskHandle_t hLogicTask = NULL;
-    TaskHandle_t hPrintTask = NULL;
     TaskHandle_t hUiTask = NULL;
     TaskHandle_t hUSB = NULL;
-
-    sensorDataQueue = xQueueCreate(32, sizeof(sensor_data_t));
-
-    if (sensorDataQueue == NULL)
-    {
-        printf("Sensor data queue creation failed.\n");
-        return 0;
-    }
 
     xTaskCreate(usbTask, "usb", 2048, NULL, 3, &hUSB);
 #if (configNUMBER_OF_CORES > 1)
@@ -764,12 +877,25 @@ int main()
 #endif
 
     // Create the tasks with xTaskCreate
-    BaseType_t result = xTaskCreate(input_task,         // (en) Task function
-                                    "input",            // (en) Name of the task
+    BaseType_t result = xTaskCreate(comms_task,         // (en) Task function
+                                    "comms",            // (en) Name of the task
                                     DEFAULT_STACK_SIZE, // (en) Size of the stack for this task (in words). Generally 1024 or 2048
                                     NULL,               // (en) Arguments of the task
                                     2,                  // (en) Priority of this task
-                                    &hInputTask);       // (en) A handle to control the execution of this task
+                                    &hCommsTask);       // (en) A handle to control the execution of this task
+
+    if (result != pdPASS)
+    {
+        printf("Comms task creation failed.\n");
+        return 0;
+    }
+
+    result = xTaskCreate(input_task,         // (en) Task function
+                         "input",            // (en) Name of the task
+                         DEFAULT_STACK_SIZE, // (en) Size of the stack for this task (in words). Generally 1024 or 2048
+                         NULL,               // (en) Arguments of the task
+                         2,                  // (en) Priority of this task
+                         &hInputTask);       // (en) A handle to control the execution of this task
 
     if (result != pdPASS)
     {
@@ -787,19 +913,6 @@ int main()
     if (result != pdPASS)
     {
         printf("Logic task creation failed.\n");
-        return 0;
-    }
-
-    result = xTaskCreate(print_task,         // (en) Task function
-                         "print",            // (en) Name of the task
-                         DEFAULT_STACK_SIZE, // (en) Size of the stack for this task (in words). Generally 1024 or 2048
-                         NULL,               // (en) Arguments of the task
-                         2,                  // (en) Priority of this task
-                         &hPrintTask);       // (en) A handle to control the execution of this task
-
-    if (result != pdPASS)
-    {
-        printf("Print task creation failed.\n");
         return 0;
     }
 
