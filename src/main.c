@@ -53,6 +53,10 @@
 #define LINE_HEIGHT ((CHAR_HEIGHT) + (LINE_SPACING))
 #define MAX_LINES ((DISPLAY_HEIGHT) / (LINE_HEIGHT))
 
+#define MAX_RECEIVED_CHARS ((CHARS_PER_LINE) * (MAX_LINES))
+// Also reserves space for '\0'.
+#define RECEIVED_TEXT_SIZE ((MAX_RECEIVED_CHARS) + 1)
+
 #define LINE_START_X ((int16_t)0)
 
 // Morse code definitions.
@@ -171,7 +175,7 @@ static float accel_y = NO_ACCEL_VALUE;
 static float accel_z = NO_ACCEL_VALUE;
 static uint32_t ambientLight = NO_LIGHT_VALUE;
 static bool newTextToPrint = false;
-static char receivedText[((CHARS_PER_LINE) * (MAX_LINES)) + 1] = ""; // Also reserves space for '\0'.
+static char receivedText[RECEIVED_TEXT_SIZE] = ""; // Also reserves space for '\0'.
 char outputBuffer[128];
 uint8_t bufferIndex = 0;
 
