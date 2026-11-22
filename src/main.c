@@ -15,8 +15,6 @@
 
 #include "tkjhat/sdk.h"
 
-// Exercise 4. Include the libraries necessaries to use the USB-serial-debug, and TinyUSB.
-
 // Default stack size for the tasks. It can be reduced to 1024 if task is not using lot of memory.
 #define DEFAULT_STACK_SIZE 2048
 #define CDC_ITF_TX 1
@@ -527,8 +525,6 @@ static void ui_task(void *arg)
     }
 }
 
-// Exercise 4: Uncomment the following line to activate the TinyUSB library.
-
 static void usbTask(void *arg)
 {
     (void)arg;
@@ -721,13 +717,7 @@ static char morseToChar(const char *morse)
 
 int main()
 {
-
-    // Exercise 4: Comment the statement stdio_init_all();
-    //             Instead, add AT THE END OF MAIN (before vTaskStartScheduler();) adequate statements to enable the TinyUSB library and the usb-serial-debug.
-    //             You can see hello_dual_cdc for help
-    //             In CMakeLists.txt add usb_serial_debug to target_link_libraries.
-    //             In CMakeLists.txt deactivate pico_enable_stdio_usb
-
+    // Comment when using TinyUSB.
     // stdio_init_all();
 
     // Uncomment this lines if you want to wait till the serial monitor is connected
@@ -755,8 +745,6 @@ int main()
     TaskHandle_t hPrintTask = NULL;
     TaskHandle_t hUiTask = NULL;
     TaskHandle_t hUSB = NULL;
-
-    // Exercise 4: Uncomment this xTaskCreate to create the task that enables dual USB communication.
 
     sensorDataQueue = xQueueCreate(32, sizeof(sensor_data_t));
 
@@ -824,6 +812,8 @@ int main()
         return 0;
     }
 
+    // This should go just before vTaskStartSheduler without any delays.
+    // Otherwise, the TinyUSB stack won't recognize the device.
     tusb_init();
     usb_serial_init();
 
