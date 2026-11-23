@@ -459,8 +459,8 @@ static void logic_task(void *arg)
                 // Do nothing, if we receive a space.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    // Delete the second space we put in the buffer.
-                    current_morse[--morse_index] = '\0';
+                    // Delete the second space we put in the output buffer.
+                    outputBuffer[--bufferIndex] = '\0';
 
                     if (morse_index < sizeof(current_morse) - 1)
                     {
