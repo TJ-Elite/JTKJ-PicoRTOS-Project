@@ -443,6 +443,13 @@ static void logic_task(void *arg)
                 // If space morseState changes to WORD_DONE.
                 else if (symbol == SPACE)
                 {
+                    // Put space in buffer as long as there's also room for '\n' and '\0' after.
+                    if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
+                    {
+                        outputBuffer[bufferIndex++] = SPACE;
+                        outputBuffer[bufferIndex] = '\0';
+                    }
+
                     morseState = WORD_DONE;
                 }
                 break;
