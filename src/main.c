@@ -910,7 +910,11 @@ static void decodeMessage(const char *message)
         // Read the next char in message.
         else if (symbolIndex < MAX_MORSE_LENGTH - 1)
         {
-            symbol[symbolIndex++] = *message;
+            // Ignore '\n' characters.
+            if ('\n' != *message)
+            {
+                symbol[symbolIndex++] = *message;
+            }
         }
         // The symbol couldn't be decoded because it's too long.
         else
