@@ -857,8 +857,7 @@ static char morseToChar(const char *morse)
 
 /**
  * Tries to decode the given Morse message, storing decoded characters in receivedText[].
- * If one of the space-separated substrings isn't found in the conversion table,
- * the decoding process ends prematurely without processing the rest of the message.
+ * Any space-separated substrings that can't be decoded are stored as '?'.
  * newTextToPrint is set to true if at least one character was decoded successfully.
  */
 static void decodeMessage(const char *message)
@@ -881,34 +880,26 @@ static void decodeMessage(const char *message)
             if (symbolIndex > 0)
             {
                 symbol[symbolIndex] = '\0';
-                symbolIndex = 0;
-                char c = morseToChar(symbol);
-                if ('\0' == c)
-                {
-                    break; // Stop decoding process if character couldn't be decoded.
-                }
+                symbolIndex = 0; // This should be set to 0 BEFORE potentially breaking from the while loop.
 
-                if (textIndex < RECEIVED_TEXT_SIZE - 1)
-                {
-                    receivedText[textIndex++] = morseToChar(symbol);
-                }
-                else
+                if (textIndex >= RECEIVED_TEXT_SIZE - 1)
                 {
                     break; // receivedText[] is full.
                 }
+
+                char c = morseToChar(symbol);
+                receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : '?';
             }
 
             // Two spaces separate words.
             if (SPACE == *(message + 1))
             {
-                if (textIndex < RECEIVED_TEXT_SIZE - 1)
-                {
-                    receivedText[textIndex++] = SPACE;
-                }
-                else
+                if (textIndex >= RECEIVED_TEXT_SIZE - 1)
                 {
                     break; // receivedText[] is full.
                 }
+
+                receivedText[textIndex++] = SPACE;
 
                 // Skip all additional spaces.
                 while (SPACE == *message)
@@ -916,15 +907,20 @@ static void decodeMessage(const char *message)
                 continue; // This skips the additional ++message at the end of the loop.
             }
         }
+        // Read the next char in message.
         else if (symbolIndex < MAX_MORSE_LENGTH - 1)
         {
             symbol[symbolIndex++] = *message;
         }
+        // The symbol couldn't be decoded because it's too long.
         else
         {
-            // The symbol couldn't be decoded because it's too long.
             symbolIndex = 0; // Prevents the processing step after the while loop.
-            break;
+            if (textIndex >= RECEIVED_TEXT_SIZE - 1)
+            {
+                break; // receivedText[] is full.
+            }
+            receivedText[textIndex++] = '?';
         }
 
         ++message;
@@ -935,9 +931,9 @@ static void decodeMessage(const char *message)
     {
         symbol[symbolIndex] = '\0';
         char c = morseToChar(symbol);
-        if ('\0' != c && textIndex < RECEIVED_TEXT_SIZE - 1)
+        if (textIndex < RECEIVED_TEXT_SIZE - 1)
         {
-            receivedText[textIndex++] = morseToChar(symbol);
+            receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : '?';
         }
     }
 
