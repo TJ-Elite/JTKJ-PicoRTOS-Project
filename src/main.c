@@ -23,6 +23,7 @@
 #define NO_TIME 0U
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
+#define DEBUG_PRINT_INTERVAL_MS 500U // How often the sensor debug line is repeated while the symbol stays the same.
 #define MAX_TIME_BETWEEN_MS 250U // If the time between pressing one button and then pressing the other is shorter than this,
 // then both buttons are being pressed.
 
@@ -126,7 +127,11 @@ static void usbTask(void *arg);
 static inline void toggleInputMode();
 static inline void interpretInput();
 static int initAccelerometer();
-static void readAccelerometer();
+static bool readAccelerometer(float *x, float *y, float *z);
+static char classifyAccel(float x, float y, float z);
+static char classifyLight(uint32_t lux);
+static const char *symbolName(char symbol);
+static void printSensorDebug(InputMode mode, float x, float y, float z, uint32_t lux);
 static void interpretAccelerometer();
 static inline void clearAccelReadings();
 static void interpretLight();
@@ -317,13 +322,18 @@ static void input_task(void *arg)
     {
         if (ACCEL_INPUT == inputMode)
         {
-            // Try to get a reading from the accelerometer.
-            readAccelerometer();
+            // Try to get a reading from the accelerometer and show it on CDC 0 with the symbol it means.
+            float x, y, z;
+            if (readAccelerometer(&x, &y, &z))
+            {
+                printSensorDebug(ACCEL_INPUT, x, y, z, 0);
+            }
         }
         else
         {
-            // Get a reading from the light sensor.
+            // Get a reading from the light sensor and show it on CDC 0 with the symbol it means.
             ambientLight = veml6030_read_light();
+            printSensorDebug(LIGHT_INPUT, 0, 0, 0, ambientLight);
         }
 
         // Do not remove this.
@@ -585,12 +595,17 @@ static int initAccelerometer()
     return 0; // Accelerometer is running.
 }
 
-static void readAccelerometer()
+/**
+ * Reads the accelerometer and stores the values for interpretAccelerometer().
+ * The values are also given to the caller through x, y and z (in g).
+ * Returns true if the reading succeeded.
+ */
+static bool readAccelerometer(float *x, float *y, float *z)
 {
     // First we check that the acceleremeter is running. If not, we try to initialize it.
     if (initAccelerometer())
     {
-        return; // Return if the accelerometer isn't running.
+        return false; // Return if the accelerometer isn't running.
     }
 
     float ax = 0.0, ay = 0.0, az = 0.0, gx = 0.0, gy = 0.0, gz = 0.0, t = 0.0;
@@ -598,13 +613,119 @@ static void readAccelerometer()
     // Read the sensor values. Returns 0 on success.
     if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t))
     {
-        return;
+        return false;
     }
 
     // Store the accelerometer values.
     accel_x = ax;
     accel_y = ay;
     accel_z = az;
+
+    *x = ax;
+    *y = ay;
+    *z = az;
+    return true;
+}
+
+/**
+ * Returns the Morse symbol that matches the orientation of the device,
+ * or '\0' if the orientation does not match any valid position.
+ */
+static char classifyAccel(float x, float y, float z)
+{
+    // Calculate the vector magnitude and scale the normalized threshold value with it.
+    // This helps compensate for situations where the accelerometer readings are a bit off and
+    // don't produce 1.0 g when laying perfectly flat as expected.
+    float vector_magnitude = sqrtf(x * x + y * y + z * z);
+    float threshold = ACCEL_THRESHOLD * vector_magnitude;
+
+    // If one axis has a value above the threshold, it is the corresponding Morse input.
+    if (fabsf(z) > threshold)
+    {
+        return DASH;
+    }
+    if (fabsf(x) > threshold)
+    {
+        return DOT;
+    }
+    if (fabsf(y) > threshold)
+    {
+        return SPACE;
+    }
+    return '\0';
+}
+
+/**
+ * Returns the Morse symbol that matches the light level (in lux).
+ */
+static char classifyLight(uint32_t lux)
+{
+    if (lux < DASH_LUX)
+    {
+        return DOT;
+    }
+    if (lux < SPACE_LUX)
+    {
+        return DASH;
+    }
+    return SPACE;
+}
+
+/**
+ * Name of a symbol for the debug output. '\0' means "no valid symbol".
+ */
+static const char *symbolName(char symbol)
+{
+    switch (symbol)
+    {
+    case DOT:
+        return "DOT (.)";
+    case DASH:
+        return "DASH (-)";
+    case SPACE:
+        return "SPACE";
+    default:
+        return "NONE";
+    }
+}
+
+/**
+ * Prints the latest sensor value and the symbol it means to CDC 0 (usb_serial_print):
+ *   ACCEL x=0.02 y=-0.01 z=0.99 -> DASH (-)
+ *   LIGHT Lux:420 -> DASH (-)
+ * A line is printed when the symbol or the mode changes, and otherwise at most
+ * every DEBUG_PRINT_INTERVAL_MS. Nothing is printed if the serial port is not open.
+ */
+static void printSensorDebug(InputMode mode, float x, float y, float z, uint32_t lux)
+{
+    static char lastSymbol = 0; // 0 = nothing printed yet.
+    static InputMode lastMode = ACCEL_INPUT;
+    static TickType_t lastPrint = 0;
+
+    char symbol = (LIGHT_INPUT == mode) ? classifyLight(lux) : classifyAccel(x, y, z);
+    char shown = ('\0' == symbol) ? '?' : symbol; // '?' keeps "nothing printed yet" (0) distinguishable.
+    TickType_t now = xTaskGetTickCount();
+
+    if (shown == lastSymbol && mode == lastMode && now - lastPrint < pdMS_TO_TICKS(DEBUG_PRINT_INTERVAL_MS))
+    {
+        return; // Same symbol as last time and printed recently.
+    }
+
+    lastSymbol = shown;
+    lastMode = mode;
+    lastPrint = now;
+
+    char line[80];
+    if (LIGHT_INPUT == mode)
+    {
+        snprintf(line, sizeof(line), "LIGHT Lux:%lu -> %s\n", (unsigned long)lux, symbolName(symbol));
+    }
+    else
+    {
+        snprintf(line, sizeof(line), "ACCEL x=%.2f y=%.2f z=%.2f -> %s\n",
+                 (double)x, (double)y, (double)z, symbolName(symbol));
+    }
+    usb_serial_print(line);
 }
 
 static void interpretAccelerometer()
@@ -615,32 +736,16 @@ static void interpretAccelerometer()
         return;
     }
 
-    // Calculate the vector magnitude and scale the normalized threshold value with it.
-    // This helps compensate for situations where the accelerometer readings are a bit off and
-    // don't produce 1.0 g when laying perfectly flat as expected.
-    float vector_magnitude = sqrtf(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
-    float threshold = ACCEL_THRESHOLD * vector_magnitude;
+    char symbol = classifyAccel(accel_x, accel_y, accel_z);
 
-    // If one axis has a value above the threshold, interpret it as the corresponding Morse input.
-    if (fabsf(accel_z) > threshold)
-    {
-        latest_event.symbol = DASH;
-    }
-    else if (fabsf(accel_x) > threshold)
-    {
-        latest_event.symbol = DOT;
-    }
-    else if (fabsf(accel_y) > threshold)
-    {
-        latest_event.symbol = SPACE;
-    }
-    else
+    if ('\0' == symbol)
     {
         // The device orientation deviates too much from the valid positions.
         clearAccelReadings();
         return;
     }
 
+    latest_event.symbol = symbol;
     latest_event.timestamp = xTaskGetTickCount();
 
     // Clear the accelerometer readings to prevent processing the same values multiple times.
@@ -663,18 +768,7 @@ static void interpretLight()
     }
 
     // Interpret the light level as either a dot, dash or space.
-    if (ambientLight < DASH_LUX)
-    {
-        latest_event.symbol = DOT;
-    }
-    else if (ambientLight < SPACE_LUX)
-    {
-        latest_event.symbol = DASH;
-    }
-    else
-    {
-        latest_event.symbol = SPACE;
-    }
+    latest_event.symbol = classifyLight(ambientLight);
 
     latest_event.timestamp = xTaskGetTickCount();
     ambientLight = NO_LIGHT_VALUE; // Clear the light value to prevent processing the same value multiple times.
