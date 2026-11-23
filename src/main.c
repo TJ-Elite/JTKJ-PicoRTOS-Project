@@ -406,20 +406,21 @@ static void logic_task(void *arg)
                         current_morse[morse_index] = '\0';
                     }
                 }
-                // Space: decode letter, store it in outputBuffer and morseState changes to CHARACTER_DONE.
+                // Space: Store Morse symbol and space in outputBuffer and morseState changes to CHARACTER_DONE.
                 else if (symbol == SPACE)
                 {
-                    // The Morse symbol is only stored if there's still room for it as well as
-                    // '\0' and '\0' after it, it actually a valid Morse symbol,
-                    // and there is no message currently being sent.
+                    // The Morse symbol is only stored if it's actually a valid Morse symbol,
+                    // there is no message currently being sent, and there's still enough
+                    // room for it as well as two spaces, '\n' and '\0' after it.
                     const char c = morseToChar(current_morse);
                     const size_t morseLength = strlen(current_morse);
-                    if ('\0' != c && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - morseLength && !sendMessage)
+                    if (!sendMessage && '\0' != c && bufferIndex <= OUTPUT_BUFFER_SIZE - (morseLength + 4))
                     {
                         for (size_t i = 0; i < morseLength; ++i)
                         {
                             outputBuffer[bufferIndex++] = current_morse[i];
                         }
+                        outputBuffer[bufferIndex++] = SPACE;
                         outputBuffer[bufferIndex] = '\0';
                     }
                     current_morse[0] = '\0';
@@ -717,18 +718,16 @@ static void interpretAccelerometer()
 
     char symbol = classifyAccel(accel_x, accel_y, accel_z);
 
+    // Clear the accelerometer readings to prevent processing the same values multiple times.
+    clearAccelReadings();
+
     if ('\0' == symbol)
     {
-        // The device orientation deviates too much from the valid positions.
-        clearAccelReadings();
-        return;
+        return; // The device orientation deviates too much from the valid positions.
     }
 
     latest_event.symbol = symbol;
     latest_event.timestamp = xTaskGetTickCount();
-
-    // Clear the accelerometer readings to prevent processing the same values multiple times.
-    clearAccelReadings();
 }
 
 static inline void clearAccelReadings()
