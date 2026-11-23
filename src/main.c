@@ -24,7 +24,7 @@
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
 #define DEBUG_PRINT_INTERVAL_MS 500U // How often the sensor debug line is repeated while the symbol stays the same.
-#define MAX_TIME_BETWEEN_MS 250U // If the time between pressing one button and then pressing the other is shorter than this,
+#define MAX_TIME_BETWEEN_MS 250U     // If the time between pressing one button and then pressing the other is shorter than this,
 // then both buttons are being pressed.
 
 // Accelerometer definitions.
@@ -203,7 +203,7 @@ static volatile bool b1_down = false; // True if button 1 is being pressed down.
 static volatile bool b2_down = false; // True if button 2 is being pressed down.
 static volatile bool sendMessage = false;
 static volatile morse_event_t latest_event = {'\0', 0};
-uint8_t volatile bufferIndex = 0;
+static volatile uint8_t bufferIndex = 0;
 
 static void gpio_callback(uint gpio, uint32_t events)
 {
@@ -357,21 +357,11 @@ static void logic_task(void *arg)
             b1_pressed = false;
             b2_pressed = false;
 
-            // Sanity check. Reset Morse state machine if we've somehow put too many thing in the buffer.
-            if (bufferIndex >= OUTPUT_BUFFER_MAX_INDEX)
-            {
-                morseState = IDLE;
-                bufferIndex = 0;
-                outputBuffer[0] = '\0';
-                current_morse[0] = '\0';
-                morse_index = 0;
-                sendMessage = false;
-            }
             // '\n' can only be inserted and the message sent when preceded by two spaces and there is no pending message waiting to be send.
             // This makes sure that this task and comms task don't send and reset shared variables at the same time.
-            else if (WORD_DONE == morseState && !sendMessage)
+            if (WORD_DONE == morseState && !sendMessage)
             {
-                //Make sure there's room for '\n' and '\0'
+                // Make sure there's room for '\n' and '\0'
                 if (bufferIndex >= OUTPUT_BUFFER_MAX_INDEX)
                 {
                     bufferIndex = OUTPUT_BUFFER_MAX_INDEX - 1;
@@ -436,11 +426,15 @@ static void logic_task(void *arg)
                 // Space: decode letter, store it in outputBuffer and morseState changes to CHARACTER_DONE.
                 else if (symbol == SPACE)
                 {
-                    char decoded = morseToChar(current_morse);
-                    // The character is only stored if there's still room for '\n' and '\0' after it and there is no message currently being sent.
-                    if (decoded != '\0' && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1 && !sendMessage)
+                    // The Morse symbol is only stored if there's still room for it as well as
+                    // '\0' and '\0' after it, and there is no message currently being sent.
+                    size_t morseLength = strlen(current_morse);
+                    if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - morseLength && !sendMessage)
                     {
-                        outputBuffer[bufferIndex++] = decoded;
+                        for (size_t i = 0; i < morseLength; ++i)
+                        {
+                            outputBuffer[bufferIndex++] = current_morse[i];
+                        }
                         outputBuffer[bufferIndex] = '\0';
                     }
                     current_morse[0] = '\0';
