@@ -186,9 +186,7 @@ static float accel_z = NO_ACCEL_VALUE;
 static uint32_t ambientLight = NO_LIGHT_VALUE;
 static bool newTextToPrint = false;
 static char receivedText[RECEIVED_TEXT_SIZE] = ""; // Also reserves space for '\0'.
-static bool sendMessage = false;
-char outputBuffer[OUTPUT_BUFFER_SIZE];
-uint8_t bufferIndex = 0;
+char outputBuffer[OUTPUT_BUFFER_SIZE] = "";
 
 // Volatile
 static volatile bool b1_pressed = false;
@@ -198,7 +196,9 @@ static volatile TickType_t b1_press_time = NO_TIME;
 static volatile TickType_t b2_press_time = NO_TIME;
 static volatile bool b1_down = false; // True if button 1 is being pressed down.
 static volatile bool b2_down = false; // True if button 2 is being pressed down.
+static volatile bool sendMessage = false;
 static volatile morse_event_t latest_event = {'\0', 0};
+uint8_t volatile bufferIndex = 0;
 
 static void gpio_callback(uint gpio, uint32_t events)
 {
@@ -293,7 +293,11 @@ static void comms_task(void *arg)
             // Result is greater than zero when data was sent successfully.
             if (result > 0)
             {
-                sendMessage = !sendMessage; // Toggle sendMessage flag if sent successfully.
+                sendMessage = false; // sendMessage becomes false if sent successfully.
+                morseState = IDLE;
+                // Clear the outputBufferbuffer and it's index.
+                bufferIndex = 0;
+                outputBuffer[0] = '\0';
             }
         }
 
@@ -348,19 +352,22 @@ static void logic_task(void *arg)
             {
                 morseState = IDLE;
                 bufferIndex = 0;
+                outputBuffer[0] = '\0';
                 current_morse[0] = '\0';
                 morse_index = 0;
+                sendMessage = false;
             }
-            // '\n' can only be inserted and the message sent when preceded by two spaces.
-            else if (WORD_DONE == morseState)
+            // '\n' can only be inserted and the message sent when preceded by two spaces and there is no pending message waiting to be send.
+            // This makes sure that this task and comms task don't send and reset shared variables at the same time.
+            else if (WORD_DONE == morseState && !sendMessage)
             {
+                //Make sure there's room for '\n' and '\0'
+                if (bufferIndex >= OUTPUT_BUFFER_MAX_INDEX)
+                {
+                    bufferIndex = OUTPUT_BUFFER_MAX_INDEX - 1;
+                }
                 outputBuffer[bufferIndex++] = '\n';
                 outputBuffer[bufferIndex] = '\0';
-
-                morseState = IDLE;
-                bufferIndex = 0;
-                current_morse[0] = '\0';
-                morse_index = 0;
 
                 // Try to send the message via USB.
                 sendMessage = true;
@@ -369,7 +376,13 @@ static void logic_task(void *arg)
                 // Result is greater than zero when data was sent successfully.
                 if (result > 0)
                 {
-                    sendMessage = !sendMessage; // Toggle sendMessage flag if sent successfully.
+                    sendMessage = false; // sendMessage becomes false if sent successfully.
+                    morseState = IDLE;
+                    // Clear the buffers and their indexes.
+                    bufferIndex = 0;
+                    outputBuffer[0] = '\0';
+                    current_morse[0] = '\0';
+                    morse_index = 0;
                 }
             }
         }
@@ -414,10 +427,11 @@ static void logic_task(void *arg)
                 else if (symbol == SPACE)
                 {
                     char decoded = morseToChar(current_morse);
-                    // The character is only stored if there's still room for '\n' and '\0' after it.
-                    if (decoded != '\0' && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
+                    // The character is only stored if there's still room for '\n' and '\0' after it and there is no message currently being sent.
+                    if (decoded != '\0' && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1 && !sendMessage)
                     {
                         outputBuffer[bufferIndex++] = decoded;
+                        outputBuffer[bufferIndex] = '\0';
                     }
                     current_morse[0] = '\0';
                     morse_index = 0;
@@ -447,10 +461,11 @@ static void logic_task(void *arg)
                 // If dot or dash adds a space to the outputBuffer and then starts a new word putting the symbol to the temporary string.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    // Checks that the index doesn't go over the size of the array and that the last letter wasn't a space.
-                    if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1 && outputBuffer[bufferIndex - 1] != SPACE)
+                    // Checks that the index doesn't go over the size of the array, the last letter wasn't a space and that there isn't a message being sent.
+                    if (bufferIndex > 0 && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1 && outputBuffer[bufferIndex - 1] != SPACE && !sendMessage)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
+                        outputBuffer[bufferIndex] = '\0';
                     }
                     if (morse_index < sizeof(current_morse) - 1)
                     {
