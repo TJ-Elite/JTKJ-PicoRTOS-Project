@@ -354,11 +354,11 @@ static void logic_task(void *arg)
             b1_pressed = false;
             b2_pressed = false;
 
-            // '\n' can only be inserted and the message sent when preceded by two spaces
-            // and there is no pending message waiting to be sent.
+            // '\n' can only be inserted and the message sent when preceded by two spaces,
+            // i.e. morseState is WORD_DONE, and there is no pending message waiting to be sent.
             if (WORD_DONE == morseState && !sendMessage)
             {
-                // Make sure there's room for '\n' and '\0'.
+                // Make sure there's room for the '\n' and '\0'.
                 if (bufferIndex >= OUTPUT_BUFFER_MAX_INDEX)
                 {
                     bufferIndex = OUTPUT_BUFFER_MAX_INDEX - 1;
@@ -440,10 +440,10 @@ static void logic_task(void *arg)
                     }
                     morseState = READING_CHARACTER;
                 }
-                // If space morseState changes to WORD_DONE.
+                // If space, morseState changes to WORD_DONE.
                 else if (symbol == SPACE)
                 {
-                    // Put space in buffer as long as there's also room for '\n' and '\0' after.
+                    // Put the second space in the buffer as long as there's also room for '\n' and '\0' after.
                     if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
@@ -455,20 +455,19 @@ static void logic_task(void *arg)
                 break;
 
             case WORD_DONE:
-                // If dot or dash adds a space to the outputBuffer and then starts a new word putting the symbol to the temporary string.
+                // If dot or dash, start a new word.
+                // Do nothing, if we receive a space.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    // Checks that the index doesn't go over the size of the array, the last letter wasn't a space and that there isn't a message being sent.
-                    if (bufferIndex > 0 && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1 && outputBuffer[bufferIndex - 1] != SPACE && !sendMessage)
-                    {
-                        outputBuffer[bufferIndex++] = SPACE;
-                        outputBuffer[bufferIndex] = '\0';
-                    }
+                    // Delete the second space we put in the buffer.
+                    current_morse[--morse_index] = '\0';
+
                     if (morse_index < sizeof(current_morse) - 1)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
                     }
+
                     morseState = READING_CHARACTER;
                 }
                 break;
