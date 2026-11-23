@@ -135,6 +135,7 @@ static void printSensorDebug(InputMode mode, float x, float y, float z, uint32_t
 static void interpretAccelerometer();
 static inline void clearAccelReadings();
 static void interpretLight();
+static inline void resetMorseStateMachine();
 static void printToScreen(const char *text);
 static int sendViaUsb();
 static const char *charToMorse(char c);
@@ -191,7 +192,8 @@ static float accel_z = NO_ACCEL_VALUE;
 static uint32_t ambientLight = NO_LIGHT_VALUE;
 static bool newTextToPrint = false;
 static char receivedText[RECEIVED_TEXT_SIZE] = ""; // Also reserves space for '\0'.
-char outputBuffer[OUTPUT_BUFFER_SIZE] = "";
+static char outputBuffer[OUTPUT_BUFFER_SIZE] = "";
+static char current_morse[MORSE_BUFFER_SIZE] = ""; // Temporary buffer for one Morse symbol.
 
 // Volatile
 static volatile bool b1_pressed = false;
@@ -204,6 +206,7 @@ static volatile bool b2_down = false; // True if button 2 is being pressed down.
 static volatile bool sendMessage = false;
 static volatile morse_event_t latest_event = {'\0', 0};
 static volatile uint8_t bufferIndex = 0;
+static volatile uint8_t morse_index = 0; // Keeps track of the current position in the temporary buffer.
 
 static void gpio_callback(uint gpio, uint32_t events)
 {
@@ -298,11 +301,7 @@ static void comms_task(void *arg)
             // Result is greater than zero when data was sent successfully.
             if (result > 0)
             {
-                sendMessage = false; // sendMessage becomes false if sent successfully.
-                morseState = IDLE;
-                // Clear the outputBufferbuffer and it's index.
-                bufferIndex = 0;
-                outputBuffer[0] = '\0';
+                resetMorseStateMachine();
             }
         }
 
@@ -344,8 +343,6 @@ static void input_task(void *arg)
 static void logic_task(void *arg)
 {
     (void)arg;
-    static char current_morse[MORSE_BUFFER_SIZE] = ""; // Temporary buffer for one letter(stores symbols that are decoded in to the letter).
-    static uint8_t morse_index = 0;                    // Keeps track of the current position in the temporary buffer.
 
     while (1)
     {
@@ -357,11 +354,11 @@ static void logic_task(void *arg)
             b1_pressed = false;
             b2_pressed = false;
 
-            // '\n' can only be inserted and the message sent when preceded by two spaces and there is no pending message waiting to be send.
-            // This makes sure that this task and comms task don't send and reset shared variables at the same time.
+            // '\n' can only be inserted and the message sent when preceded by two spaces
+            // and there is no pending message waiting to be sent.
             if (WORD_DONE == morseState && !sendMessage)
             {
-                // Make sure there's room for '\n' and '\0'
+                // Make sure there's room for '\n' and '\0'.
                 if (bufferIndex >= OUTPUT_BUFFER_MAX_INDEX)
                 {
                     bufferIndex = OUTPUT_BUFFER_MAX_INDEX - 1;
@@ -369,21 +366,7 @@ static void logic_task(void *arg)
                 outputBuffer[bufferIndex++] = '\n';
                 outputBuffer[bufferIndex] = '\0';
 
-                // Try to send the message via USB.
-                sendMessage = true;
-                int result = sendViaUsb();
-
-                // Result is greater than zero when data was sent successfully.
-                if (result > 0)
-                {
-                    sendMessage = false; // sendMessage becomes false if sent successfully.
-                    morseState = IDLE;
-                    // Clear the buffers and their indexes.
-                    bufferIndex = 0;
-                    outputBuffer[0] = '\0';
-                    current_morse[0] = '\0';
-                    morse_index = 0;
-                }
+                sendMessage = true; // Flag message ready for sending via USB serial.
             }
         }
 
@@ -427,9 +410,11 @@ static void logic_task(void *arg)
                 else if (symbol == SPACE)
                 {
                     // The Morse symbol is only stored if there's still room for it as well as
-                    // '\0' and '\0' after it, and there is no message currently being sent.
-                    size_t morseLength = strlen(current_morse);
-                    if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - morseLength && !sendMessage)
+                    // '\0' and '\0' after it, it actually a valid Morse symbol,
+                    // and there is no message currently being sent.
+                    const char c = morseToChar(current_morse);
+                    const size_t morseLength = strlen(current_morse);
+                    if ('\0' != c && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - morseLength && !sendMessage)
                     {
                         for (size_t i = 0; i < morseLength; ++i)
                         {
@@ -766,6 +751,21 @@ static void interpretLight()
 
     latest_event.timestamp = xTaskGetTickCount();
     ambientLight = NO_LIGHT_VALUE; // Clear the light value to prevent processing the same value multiple times.
+}
+
+/**
+ * Resets the Morse state machine. Note that sendMessage flag is also set to false.
+ */
+static inline void resetMorseStateMachine()
+{
+    sendMessage = false;
+    morseState = IDLE;
+
+    // Clear the buffers and their indexes.
+    bufferIndex = 0;
+    outputBuffer[0] = '\0';
+    current_morse[0] = '\0';
+    morse_index = 0;
 }
 
 /**
