@@ -443,8 +443,8 @@ static void logic_task(void *arg)
                 // If space, morseState changes to WORD_DONE.
                 else if (symbol == SPACE)
                 {
-                    // Put the second space in the buffer as long as there's also room for '\n' and '\0' after.
-                    if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
+                    // Put the second space in the buffer as long as a message isn't currently being send and there's also room for '\n' and '\0' after.
+                    if (!sendMessage && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
                         outputBuffer[bufferIndex] = '\0';
@@ -459,8 +459,11 @@ static void logic_task(void *arg)
                 // Do nothing, if we receive a space.
                 if (symbol == DOT || symbol == DASH)
                 {
-                    // Delete the second space we put in the output buffer.
-                    outputBuffer[--bufferIndex] = '\0';
+                    if (!sendMessage && bufferIndex > 0 && outputBuffer[bufferIndex - 1] == SPACE)
+                    {
+                        // Delete the second space we put in the output buffer.
+                        outputBuffer[--bufferIndex] = '\0';
+                    }
 
                     if (morse_index < sizeof(current_morse) - 1)
                     {
@@ -908,7 +911,7 @@ static void decodeMessage(const char *message)
             }
         }
         // Read the next char in message.
-        else if (symbolIndex < MAX_MORSE_LENGTH - 1)
+        else if (symbolIndex < MAX_MORSE_LENGTH)
         {
             // Ignore '\n' characters.
             if ('\n' != *message)
