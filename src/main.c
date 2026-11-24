@@ -44,6 +44,16 @@
 #define BUZZER_FREQ_HZ 4000
 #define CONFIRM_DURATION_MS 300
 
+// LED definitions.
+#define LED_OFF (false)
+#define LED_ON (true)
+// Note that all durations should have a unique length, because we take advantage of that.
+#define DOT_DURATION_MS 150U
+#define DASH_DURATION_MS (3U * DOT_DURATION_MS)
+#define MORSE_SPACE_MS (DOT_DURATION_MS + 1U)
+#define CHAR_SPACE_MS (3U * DOT_DURATION_MS + 1U)
+#define WORD_SPACE_MS (7U * DOT_DURATION_MS)
+
 // Display definitions. Dimensions are in pixels at font scaling 1.
 // https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf
 #define DISPLAY_WIDTH 128U
@@ -60,10 +70,10 @@
 
 #define MAX_RECEIVED_CHARS ((CHARS_PER_LINE) * (MAX_LINES))
 // Also reserves space for '\0'.
-#define RECEIVED_TEXT_SIZE (MAX_RECEIVED_CHARS + 1)
+#define RECEIVED_TEXT_SIZE ((MAX_RECEIVED_CHARS) + 1)
 // Reserves enough space for the maximum number of characters the screen can fit at once expressed in Morse code,
 // including the spaces between characters. Also reserves space for the final '\0' even in the worst case.
-#define INPUT_BUZZER_SIZE (MAX_RECEIVED_CHARS * (MAX_MORSE_LENGTH + 1))
+#define INPUT_BUFFER_SIZE ((MAX_RECEIVED_CHARS) * ((MAX_MORSE_LENGTH) + 1))
 
 #define LINE_START_X ((int16_t)0)
 
@@ -71,11 +81,15 @@
 #define DOT '.'
 #define DASH '-'
 #define SPACE ' '
+#define WORD_SPACE '_'
+#define INVALID_MORSE '?'
+
 #define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(morseTable[0]))
 #define MAX_MORSE_LENGTH 5
+#define SYMBOL_BUFFER_SIZE ((MAX_MORSE_LENGTH) + 1)
 #define MORSE_BUFFER_SIZE 8
 #define OUTPUT_BUFFER_SIZE 128
-#define OUTPUT_BUFFER_MAX_INDEX (OUTPUT_BUFFER_SIZE - 1)
+#define OUTPUT_BUFFER_MAX_INDEX ((OUTPUT_BUFFER_SIZE) - 1)
 
 #if CFG_TUSB_OS != OPT_OS_FREERTOS
 #error "This should be using FREERTOS but the CFG_TUSB_OS is not OPT_OS_FREERTOS"
@@ -141,8 +155,16 @@ static int sendViaUsb();
 static const char *charToMorse(char c);
 static char morseToChar(const char *morse);
 static void decodeMessage(const char *message);
+static void handleMorsePlayback();
+static bool handlePlaybackTiming();
+static bool loadNextPlaybackSymbol();
+static inline TickType_t getMorseDuration(const char c, bool *const ledState);
+static inline void handleMorsePlaybackEnd();
+static inline void resetMorsePlayback();
 
 // Constants
+static const char space_string[] = " ";
+
 static const MorsePair morseTable[] = {
     {'A', ".-"},
     {'B', "-..."},
@@ -191,7 +213,13 @@ static float accel_y = NO_ACCEL_VALUE;
 static float accel_z = NO_ACCEL_VALUE;
 static uint32_t ambientLight = NO_LIGHT_VALUE;
 static bool newTextToPrint = false;
-static char receivedText[RECEIVED_TEXT_SIZE] = ""; // Also reserves space for '\0'.
+static bool playbackInProgress = false;
+static uint16_t playbackIndex = 0U;       // Index of the received character we are playing back.
+static const char *playbackSymbol = NULL; // Morse code for the symbol we are playing back.
+static uint8_t playbackSymbolIndex = 0U;  // Index within the Morse symbol.
+static TickType_t ledPhaseStartTime = NO_TIME;
+static TickType_t ledPhaseDuration = NO_TIME;
+static char receivedText[RECEIVED_TEXT_SIZE] = "";
 static char outputBuffer[OUTPUT_BUFFER_SIZE] = "";
 static char current_morse[MORSE_BUFFER_SIZE] = ""; // Temporary buffer for one Morse symbol.
 
@@ -278,7 +306,7 @@ static void comms_task(void *arg)
 {
     (void)arg;
 
-    char rx_buffer[INPUT_BUZZER_SIZE];
+    char rx_buffer[INPUT_BUFFER_SIZE];
 
     while (1)
     {
@@ -492,6 +520,10 @@ static void logic_task(void *arg)
     }
 }
 
+/**
+ * Handles printing received messages to the screen as well as playing them back
+ * in Morse form using the red LED.
+ */
 static void ui_task(void *arg)
 {
     (void)arg;
@@ -504,11 +536,18 @@ static void ui_task(void *arg)
         {
             newTextToPrint = !newTextToPrint;
             printToScreen(receivedText);
-            receivedText[0] = '\0'; // "Erase" the written string.
+
+            // "Erase" the written string if Morse playback has already concluded.
+            if (!playbackInProgress)
+            {
+                receivedText[0] = '\0';
+            }
         }
 
+        handleMorsePlayback(); // Better to be after printToScreen(), because that one can take a while.
+
         // Do not remove this.
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -830,6 +869,16 @@ static int sendViaUsb()
 
 static const char *charToMorse(char c)
 {
+    if (SPACE == c)
+    {
+        return space_string;
+    }
+
+    if (INVALID_MORSE == c)
+    {
+        return NULL;
+    }
+
     c = toupper((unsigned char)c);
 
     for (size_t i = 0; i < MORSE_TABLE_SIZE; ++i)
@@ -861,7 +910,8 @@ static char morseToChar(const char *morse)
 /**
  * Tries to decode the given Morse message, storing decoded characters in receivedText[].
  * Any space-separated substrings that can't be decoded are stored as '?'.
- * newTextToPrint is set to true if at least one character was decoded successfully.
+ * newTextToPrint and playbackInProgress are set to true if at least one character was
+ * decoded successfully.
  */
 static void decodeMessage(const char *message)
 {
@@ -871,7 +921,7 @@ static void decodeMessage(const char *message)
         return;
     }
 
-    char symbol[MAX_MORSE_LENGTH + 1]; // Reserves space for '\0' as well.
+    char symbol[SYMBOL_BUFFER_SIZE]; // Reserves space for '\0' as well.
     int8_t symbolIndex = 0;
     int16_t textIndex = 0;
 
@@ -891,7 +941,7 @@ static void decodeMessage(const char *message)
                 }
 
                 char c = morseToChar(symbol);
-                receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : '?';
+                receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : INVALID_MORSE;
             }
 
             // Two spaces separate words.
@@ -911,7 +961,7 @@ static void decodeMessage(const char *message)
             }
         }
         // Read the next char in message.
-        else if (symbolIndex < MAX_MORSE_LENGTH)
+        else if (symbolIndex < SYMBOL_BUFFER_SIZE - 1)
         {
             // Ignore '\n' characters.
             if ('\n' != *message)
@@ -927,7 +977,7 @@ static void decodeMessage(const char *message)
             {
                 break; // receivedText[] is full.
             }
-            receivedText[textIndex++] = '?';
+            receivedText[textIndex++] = INVALID_MORSE;
         }
 
         ++message;
@@ -940,7 +990,7 @@ static void decodeMessage(const char *message)
         char c = morseToChar(symbol);
         if (textIndex < RECEIVED_TEXT_SIZE - 1)
         {
-            receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : '?';
+            receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : INVALID_MORSE;
         }
     }
 
@@ -948,7 +998,200 @@ static void decodeMessage(const char *message)
     if (textIndex > 0)
     {
         newTextToPrint = true;
+        playbackInProgress = true;
+        resetMorsePlayback();
     }
+}
+
+static void handleMorsePlayback()
+{
+    // Return if playback isn't in progress.
+    if (!playbackInProgress)
+    {
+        return;
+    }
+
+    if (!handlePlaybackTiming())
+    {
+        // Return if we're waiting for the LED to have been on or off for a certain amount of
+        // time, and not enough time has elapsed, or if another wait period is initiated by
+        // handlePlaybackTiming().
+        return;
+    }
+
+    // Locate the next valid playbackSymbol, if playback of a symbol isn't already in progress.
+    // Playback ends if we've reached the end of the received message.
+    if (!loadNextPlaybackSymbol())
+    {
+        return;
+    }
+
+    // Move on to the next character if we've reached the end of the current one's Morse code.
+    if ('\0' == playbackSymbol[playbackSymbolIndex])
+    {
+        playbackSymbol = NULL;
+        playbackSymbolIndex = 0U;
+        ++playbackIndex;
+        if (!loadNextPlaybackSymbol())
+        {
+            return;
+        }
+    }
+
+    char c = playbackSymbol[playbackSymbolIndex++];
+
+    // If the current and next character are both spaces, handle them as one word separator.
+    if (SPACE == c && SPACE == receivedText[playbackIndex + 1])
+    {
+        playbackSymbol = NULL;
+        playbackSymbolIndex = 0U;
+        playbackIndex += 2;
+        c = WORD_SPACE;
+    }
+
+    // Determine whether the LED should be on or off and for how long.
+    bool ledState;
+    TickType_t duration = getMorseDuration(c, &ledState);
+
+    // Return if the character wasn't a valid one.
+    if (NO_TIME == duration)
+    {
+        return;
+    }
+
+    // Set the LED state and make note of when we started and for how long we should keep going.
+    set_red_led_status(ledState);
+    ledPhaseStartTime = xTaskGetTickCount();
+    ledPhaseDuration = duration;
+}
+
+/**
+ * Checks to see if the set wait time has elapsed. If it has and we just finished signaling a dot or a dash,
+ * unless the this was the final dot or dash in this Morse symbol and the next symbol is a space,
+ * turn the LED off and wait for the space between characters within the same Morse symbol.
+ *
+ * The function returns "true", if it's okay to continue to the next Morse playback phase,
+ * otherwise "false".
+ */
+static bool handlePlaybackTiming()
+{
+    if (NO_TIME != ledPhaseDuration)
+    {
+        // Return false if current LED phase is still in progress.
+        if (xTaskGetTickCount() - ledPhaseStartTime < ledPhaseDuration)
+        {
+            return false;
+        }
+        // If we just finished signaling a dot or a dash, and this wasn't the final dot or dash
+        // in the symbol with the next character also being a space, keep the LED off for MORSE_SPACE_MS.
+        else if ((DOT_DURATION_MS == ledPhaseDuration || DASH_DURATION_MS == ledPhaseDuration) &&
+                 !('\0' == playbackSymbol[playbackSymbolIndex] && SPACE == receivedText[playbackIndex + 1]))
+        {
+            set_red_led_status(LED_OFF);
+            ledPhaseStartTime = xTaskGetTickCount();
+            ledPhaseDuration = MORSE_SPACE_MS;
+
+            return false;
+        }
+        // Move on to the next phase.
+        else
+        {
+            ledPhaseStartTime = NO_TIME;
+            ledPhaseDuration = NO_TIME;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Tries to find the next character in the received message that has a valid Morse code.
+ * Handles resetting Morse playback variables if the end of the message is reached and
+ * returns false to signal to the caller that the message has ended.
+ */
+static bool loadNextPlaybackSymbol()
+{
+    // End playback if we've reached the end of the received text.
+    if ('\0' == receivedText[playbackIndex])
+    {
+        handleMorsePlaybackEnd();
+        return false;
+    }
+
+    // Acquire the next valid Morse symbol, if playback of a symbol isn't already in progress.
+    while (NULL == playbackSymbol)
+    {
+        playbackSymbol = charToMorse(receivedText[playbackIndex]);
+        playbackSymbolIndex = 0U;
+
+        // If the read symbol isn't valid, advance playbackIndex by one.
+        if (NULL == playbackSymbol)
+        {
+            ++playbackIndex;
+
+            // End playback if we've reached the end of the received text.
+            if ('\0' == receivedText[playbackIndex])
+            {
+                handleMorsePlaybackEnd();
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static inline TickType_t getMorseDuration(const char c, bool *const ledState)
+{
+    TickType_t duration;
+
+    switch (c)
+    {
+    case DOT:
+        duration = DOT_DURATION_MS;
+        *ledState = LED_ON;
+        break;
+    case DASH:
+        duration = DASH_DURATION_MS;
+        *ledState = LED_ON;
+        break;
+    case SPACE:
+        duration = CHAR_SPACE_MS;
+        *ledState = LED_OFF;
+        break;
+    case WORD_SPACE:
+        duration = WORD_SPACE_MS;
+        *ledState = LED_OFF;
+        break;
+    default:
+        duration = NO_TIME;
+        *ledState = LED_OFF;
+        break;
+    }
+
+    return pdMS_TO_TICKS(duration);
+}
+
+static inline void handleMorsePlaybackEnd()
+{
+    playbackInProgress = false;
+    resetMorsePlayback();
+
+    if (!newTextToPrint)
+    {
+        // "Erase" receivedText[] if it's already been printed to the screen.
+        receivedText[0] = '\0';
+    }
+}
+
+static inline void resetMorsePlayback()
+{
+    playbackIndex = 0;
+    playbackSymbol = NULL;
+    playbackSymbolIndex = 0;
+    ledPhaseStartTime = NO_TIME;
+    ledPhaseDuration = NO_TIME;
+    set_red_led_status(LED_OFF);
 }
 
 int main()
