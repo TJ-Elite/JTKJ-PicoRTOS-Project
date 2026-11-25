@@ -487,6 +487,12 @@ static void logic_task(void *arg)
                     }
 
                     morseState = WORD_DONE;
+                    if (!sendMessage && bufferIndex > 0)
+                    {
+                        outputBuffer[bufferIndex++] = '\n';
+                        outputBuffer[bufferIndex] = '\0';
+                        sendMessage = true;
+                    }
                     printMorseDebug();
                 }
                 break;
