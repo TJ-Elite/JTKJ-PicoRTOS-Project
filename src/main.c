@@ -1,3 +1,5 @@
+// Names: Jimmy Last, Tuukka Junnikkala ja Topias Saarela
+
 #include <ctype.h>
 #include <math.h>
 #include <stddef.h>
