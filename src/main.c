@@ -83,7 +83,6 @@
 #define DOT '.'
 #define DASH '-'
 #define SPACE ' '
-#define WORD_SPACE '_'
 #define INVALID_MORSE '?'
 
 #define MORSE_TABLE_SIZE (sizeof(morseTable) / sizeof(morseTable[0]))
@@ -1042,15 +1041,6 @@ static void handleMorsePlayback()
 
     char c = playbackSymbol[playbackSymbolIndex++];
 
-    // If the current and next character are both spaces, handle them as one word separator.
-    if (SPACE == c && SPACE == receivedText[playbackIndex + 1])
-    {
-        playbackSymbol = NULL;
-        playbackSymbolIndex = 0U;
-        playbackIndex += 2;
-        c = WORD_SPACE;
-    }
-
     // Determine whether the LED should be on or off and for how long.
     bool ledState;
     TickType_t duration = getMorseDuration(c, &ledState);
@@ -1084,16 +1074,35 @@ static bool handlePlaybackTiming()
         {
             return false;
         }
-        // If we just finished signaling a dot or a dash, and this wasn't the final dot or dash
-        // in the symbol with the next character also being a space, keep the LED off for MORSE_SPACE_MS.
-        else if ((DOT_DURATION_MS == ledPhaseDuration || DASH_DURATION_MS == ledPhaseDuration) &&
-                 !('\0' == playbackSymbol[playbackSymbolIndex] && SPACE == receivedText[playbackIndex + 1]))
+        // If we just finished signaling a dot or a dash...
+        else if (DOT_DURATION_MS == ledPhaseDuration || DASH_DURATION_MS == ledPhaseDuration)
         {
-            set_red_led_status(LED_OFF);
-            ledPhaseStartTime = xTaskGetTickCount();
-            ledPhaseDuration = MORSE_SPACE_MS;
+            // If it wasn't the last dot or dash within the Morse symbol, turn the LED off
+            // for one dot duration.
+            if ('\0' != playbackSymbol[playbackSymbolIndex])
+            {
+                set_red_led_status(LED_OFF);
+                ledPhaseStartTime = xTaskGetTickCount();
+                ledPhaseDuration = MORSE_SPACE_MS;
 
-            return false;
+                return false;
+            }
+            // If we finished the Morse symbol and the next character isn't a space,
+            // turn the LED off for three times the dot duration.
+            else if (SPACE != receivedText[playbackIndex + 1])
+            {
+                set_red_led_status(LED_OFF);
+                ledPhaseStartTime = xTaskGetTickCount();
+                ledPhaseDuration = CHAR_SPACE_MS;
+
+                return false;
+            }
+            // If the next character is a space, let the logic that follows handle that.
+            else
+            {
+                ledPhaseStartTime = NO_TIME;
+                ledPhaseDuration = NO_TIME;
+            }
         }
         // Move on to the next phase.
         else
@@ -1158,10 +1167,6 @@ static inline TickType_t getMorseDuration(const char c, bool *const ledState)
         *ledState = LED_ON;
         break;
     case SPACE:
-        duration = CHAR_SPACE_MS;
-        *ledState = LED_OFF;
-        break;
-    case WORD_SPACE:
         duration = WORD_SPACE_MS;
         *ledState = LED_OFF;
         break;
