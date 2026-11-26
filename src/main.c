@@ -25,7 +25,7 @@
 #define NO_TIME 0U
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
-#define DEBUG_PRINT_INTERVAL_MS 500U // How often the sensor debug line is repeated while the symbol stays the same.
+#define DEBUG_PRINT_INTERVAL_MS 1000U // How often the sensor debug line is repeated while the symbol stays the same.
 #define MAX_TIME_BETWEEN_MS 250U     // If the time between pressing one button and then pressing the other is shorter than this,
 // then both buttons are being pressed.
 
@@ -147,6 +147,7 @@ static char classifyAccel(float x, float y, float z);
 static char classifyLight(uint32_t lux);
 static const char *symbolName(char symbol);
 static void printSensorDebug(InputMode mode, float x, float y, float z, uint32_t lux);
+static void printMorseDebug(void);
 static void interpretAccelerometer();
 static inline void clearAccelReadings();
 static void interpretLight();
@@ -312,9 +313,9 @@ static void comms_task(void *arg)
     while (1)
     {
         // Check if data has been received from the computer via USB.
-        if (tud_cdc_connected() && tud_cdc_available())
+        if (tud_cdc_n_connected(CDC_ITF_TX) && tud_cdc_n_available(CDC_ITF_TX))
         {
-            uint32_t count = tud_cdc_read(rx_buffer, sizeof(rx_buffer) - 1);
+            uint32_t count = tud_cdc_n_read(CDC_ITF_TX, rx_buffer, sizeof(rx_buffer) - 1);
             if (count > 0)
             {
                 rx_buffer[count] = '\0';
@@ -404,7 +405,8 @@ static void logic_task(void *arg)
         {
             b1_pressed = false;
 
-            // Try to interpret the latest sensor measurement as a dot, dash or space.
+            // Clear the previous symbol and interpret the latest sensor measurement.
+            latest_event.symbol = '\0';
             interpretInput();
 
             char symbol = latest_event.symbol;
@@ -420,6 +422,7 @@ static void logic_task(void *arg)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
+                        printMorseDebug();
                     }
                     morseState = READING_CHARACTER;
                 }
@@ -433,6 +436,7 @@ static void logic_task(void *arg)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
+                        printMorseDebug();
                     }
                 }
                 // Space: Store Morse symbol and space in outputBuffer and morseState changes to CHARACTER_DONE.
@@ -455,6 +459,7 @@ static void logic_task(void *arg)
                     current_morse[0] = '\0';
                     morse_index = 0;
                     morseState = CHARACTER_DONE;
+                    printMorseDebug();
                 }
                 break;
 
@@ -466,6 +471,7 @@ static void logic_task(void *arg)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
+                        printMorseDebug();
                     }
                     morseState = READING_CHARACTER;
                 }
@@ -480,6 +486,13 @@ static void logic_task(void *arg)
                     }
 
                     morseState = WORD_DONE;
+                    if (!sendMessage && bufferIndex > 0)
+                    {
+                        outputBuffer[bufferIndex++] = '\n';
+                        outputBuffer[bufferIndex] = '\0';
+                        sendMessage = true;
+                    }
+                    printMorseDebug();
                 }
                 break;
 
@@ -498,9 +511,11 @@ static void logic_task(void *arg)
                     {
                         current_morse[morse_index++] = symbol;
                         current_morse[morse_index] = '\0';
+                        printMorseDebug();
                     }
 
                     morseState = READING_CHARACTER;
+                    printMorseDebug();
                 }
                 break;
 
@@ -779,6 +794,22 @@ static void interpretAccelerometer()
     latest_event.timestamp = xTaskGetTickCount();
 }
 
+/**
+ * Prints the current Morse message status to CDC 0.
+ */
+static void printMorseDebug(void)
+{
+    char line[256];
+
+    snprintf(line, sizeof(line),
+             "MORSE | Buffer: \"%s\" | Current: \"%s\" | State: %d\n",
+             outputBuffer,
+             current_morse,
+             morseState);
+
+    usb_serial_print(line);
+}
+
 static inline void clearAccelReadings()
 {
     accel_x = NO_ACCEL_VALUE;
@@ -851,6 +882,10 @@ static void printToScreen(const char *text)
 static int sendViaUsb()
 {
     uint32_t bytesWritten = 0;
+
+    usb_serial_print("Sending Morse message via CDC 1:\n");
+    usb_serial_print(outputBuffer);
+    usb_serial_print("\n");
 
     if (tud_cdc_n_connected(CDC_ITF_TX))
     {
