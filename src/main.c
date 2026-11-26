@@ -24,9 +24,13 @@
 // Time related definitions.
 #define NO_TIME 0U
 #define DEBOUNCE_MS 50U
+#define LONG_PRESS_MS 900U
 #define INTEGRATION_TIME_MS 100U
 #define DEBUG_PRINT_INTERVAL_MS 1000U // How often the sensor debug line is repeated while the symbol stays the same.
-#define HOLD_TO_SEND_MS 1000U      // Duration button 2 must be pressed to insert a newline and send.
+
+// Button definitions.
+#define BUTTON_PRESSED (false)
+#define BUTTON_RELEASED (!(BUTTON_PRESSED))
 
 // Accelerometer definitions.
 #define NO_ACCEL_VALUE (-100.0f)
@@ -43,9 +47,11 @@
 
 // Buzzer definitions.
 #define BUZZER_FREQ_LOW_HZ 4000U
-#define BUZZER_FREQ_HIGH_HZ ((BUZZER_FREQ_LOW_HZ) + 1000U)
+#define BUZZER_FREQ_MED_HZ ((BUZZER_FREQ_LOW_HZ) + 1000U)
+#define BUZZER_FREQ_HIGH_HZ ((BUZZER_FREQ_MED_HZ) + 1000U)
 #define BUZZER_CONFIRM_DURATION_MS 300U
 #define BUZZER_FAIL_DURATION_MS ((BUZZER_CONFIRM_DURATION_MS) / 2U)
+#define BUZZER_LONG_FAIL_DURATION_MS (2U * (BUZZER_CONFIRM_DURATION_MS))
 
 // LED definitions.
 #define LED_OFF (false)
@@ -164,6 +170,7 @@ static bool loadNextPlaybackSymbol();
 static inline TickType_t getMorseDuration(const char c, bool *const ledState);
 static inline void handleMorsePlaybackEnd();
 static inline void resetMorsePlayback();
+static bool makeRoomInOutputBuffer();
 
 // Constants
 static const char space_string[] = " ";
@@ -226,14 +233,14 @@ static char receivedText[RECEIVED_TEXT_SIZE] = "";
 static char outputBuffer[OUTPUT_BUFFER_SIZE] = "";
 static char current_morse[MORSE_BUFFER_SIZE] = ""; // Temporary buffer for one Morse symbol.
 
-// Volatile
+// Volatile variables
+static volatile bool b1_state = BUTTON_RELEASED;
+static volatile bool b2_state = BUTTON_RELEASED;
 static volatile bool b1_pressed = false;
 static volatile bool b2_pressed = false;
 static volatile bool b2_long_press = false;
-static volatile TickType_t b1_press_time = NO_TIME;
-static volatile TickType_t b2_press_time = NO_TIME;
-static volatile bool b1_down = false; // True if button 1 is being pressed down.
-static volatile bool b2_down = false; // True if button 2 is being pressed down.
+static volatile TickType_t b1_event_time = NO_TIME;
+static volatile TickType_t b2_event_time = NO_TIME;
 static volatile bool sendMessage = false;
 static volatile morse_event_t latest_event = {'\0', 0};
 static volatile uint8_t bufferIndex = 0;
@@ -245,52 +252,62 @@ static void gpio_callback(uint gpio, uint32_t events)
 
     if (BUTTON1 == gpio)
     {
+        // Only accept new button events after the debounce time has elapsed.
+        if (time_now - b1_event_time < pdMS_TO_TICKS(DEBOUNCE_MS))
+        {
+            return;
+        }
+
         if (events & GPIO_IRQ_EDGE_FALL)
         {
-            // Only accept new button presses after the debounce time has elapsed.
-            if (time_now - b1_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
+            if (BUTTON_RELEASED == b1_state)
             {
-                b1_press_time = time_now;
-                b1_down = true;
+                b1_event_time = time_now;
+                b1_state = BUTTON_PRESSED;
+                b1_pressed = true;
             }
         }
         else if (events & GPIO_IRQ_EDGE_RISE)
         {
-            b1_down = false;
-            TickType_t press_duration = time_now - b1_press_time;
-
-            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
+            if (BUTTON_PRESSED == b1_state)
             {
-                b1_pressed = true;
+                b1_event_time = time_now;
+                b1_state = BUTTON_RELEASED;
             }
         }
     }
     else if (BUTTON2 == gpio)
     {
+        // Only accept new button events after the debounce time has elapsed.
+        if (time_now - b2_event_time < pdMS_TO_TICKS(DEBOUNCE_MS))
+        {
+            return;
+        }
+
         if (events & GPIO_IRQ_EDGE_FALL)
         {
-            // Only accept new button presses after the debounce time has elapsed.
-            if (time_now - b2_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
+            if (BUTTON_RELEASED == b2_state)
             {
-                b2_press_time = time_now;
-                b2_down = true;
+                b2_event_time = time_now;
+                b2_state = BUTTON_PRESSED;
             }
         }
+        // Mode is toggled on button release, because we are checking for long presses first.
         else if (events & GPIO_IRQ_EDGE_RISE)
         {
-            b2_down = false;
-            TickType_t press_duration = time_now - b2_press_time;
-
-            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
+            if (BUTTON_PRESSED == b2_state)
             {
-                // Checks if button 2 was pressed for a long enough time to do a different function.
-                if (press_duration >= pdMS_TO_TICKS(HOLD_TO_SEND_MS))
+                b2_event_time = time_now;
+                b2_state = BUTTON_RELEASED;
+
+                // Input mode is only toggled if the button press wasn't a long press.
+                if (!b2_long_press)
                 {
-                    b2_long_press = true; // Long press: insert newline and send if ready.
+                    b2_pressed = true;
                 }
                 else
                 {
-                    b2_pressed = true; // Short press: toggle input mode.
+                    b2_long_press = false;
                 }
             }
         }
@@ -334,6 +351,7 @@ static void comms_task(void *arg)
                 resetMorseStateMachine();
             }
         }
+
         // Do not remove this.
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -375,23 +393,41 @@ static void logic_task(void *arg)
 
     while (1)
     {
-        // Button 2 long press: Inserts a newline if preceded by two spaces and tries to send the message.
-        if (b2_long_press)
+        // Button 2 long press:
+        // Insert a newline if preceded by two spaces and flag the message ready to be sent.
+        if (BUTTON_PRESSED == gpio_get(SW2_PIN) &&
+            xTaskGetTickCount() - b2_event_time > pdMS_TO_TICKS(LONG_PRESS_MS))
         {
-            // Clear button press flags.
-            b2_long_press = false;
+            // Update flags.
+            b2_long_press = true; // Signals ISR to not flag b2_pressed on release.
+            b2_pressed = false;   // Clear flag just in case.
 
             // '\n' can only be inserted and the message sent when preceded by two spaces,
             // i.e. morseState is WORD_DONE, and there is no pending message waiting to be sent.
             if (WORD_DONE == morseState && !sendMessage)
             {
                 // Make sure there's room for the '\n' and '\0'.
-                if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX)
+                bool roomInBuffer = true;
+                if (bufferIndex > OUTPUT_BUFFER_MAX_INDEX - 1)
+                {
+                    roomInBuffer = makeRoomInOutputBuffer();
+                }
+
+                // If there's room in the buffer, add '\n' and '\0' to the end of the message
+                // and flag it ready for sending via USB serial.
+                if (roomInBuffer)
                 {
                     outputBuffer[bufferIndex++] = '\n';
                     outputBuffer[bufferIndex] = '\0';
+                    sendMessage = true;
+                }
+                // If message can't be sent for some reason, reset the Morse state machine and sound the buzzer.
+                else
+                {
+                    resetMorseStateMachine();
 
-                    sendMessage = true; // Flag message ready for sending via USB serial.
+                    // Note: This implementation is blocking.
+                    buzzer_play_tone(BUZZER_FREQ_HIGH_HZ, BUZZER_LONG_FAIL_DURATION_MS);
                 }
             }
         }
@@ -459,7 +495,7 @@ static void logic_task(void *arg)
                     else
                     {
                         // Note: This implementation is blocking.
-                        buzzer_play_tone(BUZZER_FREQ_HIGH_HZ, BUZZER_FAIL_DURATION_MS);
+                        buzzer_play_tone(BUZZER_FREQ_MED_HZ, BUZZER_FAIL_DURATION_MS);
                     }
 
                     current_morse[0] = '\0';
@@ -1235,6 +1271,41 @@ static inline void resetMorsePlayback()
     ledPhaseStartTime = NO_TIME;
     ledPhaseDuration = NO_TIME;
     set_red_led_status(LED_OFF);
+}
+
+/**
+ * Makes room in outputBuffer[] by moving backwards and adding a second space after the first
+ * single space found. bufferIndex is left pointing at the correct new position.
+ * Returns "true" if room was made successfully in the buffer.
+ */
+static bool makeRoomInOutputBuffer()
+{
+    char charWindow[3] = {outputBuffer[bufferIndex - 1],
+                          outputBuffer[bufferIndex - 2],
+                          outputBuffer[bufferIndex - 3]};
+
+    bufferIndex -= 4;
+
+    // Move backwards through outputBuffer[] and locate a single space.
+    while (!(SPACE != charWindow[0] && SPACE == charWindow[1] && SPACE != charWindow[2]) &&
+           bufferIndex >= 0)
+    {
+        charWindow[0] = charWindow[1];
+        charWindow[1] = charWindow[2];
+        charWindow[2] = outputBuffer[bufferIndex--];
+    }
+
+    // If a single space was found, add a second space after it.
+    if (bufferIndex >= 0)
+    {
+        bufferIndex += 3;
+        outputBuffer[bufferIndex++] = SPACE;
+        outputBuffer[bufferIndex++] = '\0';
+
+        return true;
+    }
+
+    return false;
 }
 
 int main()
