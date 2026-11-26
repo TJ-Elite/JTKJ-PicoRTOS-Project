@@ -26,7 +26,7 @@
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
 #define DEBUG_PRINT_INTERVAL_MS 1000U // How often the sensor debug line is repeated while the symbol stays the same.
-#define MAX_TIME_BETWEEN_MS 250U     // If the time between pressing one button and then pressing the other is shorter than this,
+#define MAX_TIME_BETWEEN_MS 250U      // If the time between pressing one button and then pressing the other is shorter than this,
 // then both buttons are being pressed.
 
 // Accelerometer definitions.
@@ -43,12 +43,14 @@
 #define MAX_LIGHT_VALUE (UINT32_MAX - 1U)
 
 // Buzzer definitions.
-#define BUZZER_FREQ_HZ 4000
-#define CONFIRM_DURATION_MS 300
+#define BUZZER_FREQ_LOW_HZ 4000U
+#define BUZZER_FREQ_HIGH_HZ ((BUZZER_FREQ_LOW_HZ) + 1000U)
+#define BUZZER_CONFIRM_DURATION_MS 300U
+#define BUZZER_FAIL_DURATION_MS ((BUZZER_CONFIRM_DURATION_MS) / 2U)
 
 // LED definitions.
 #define LED_OFF (false)
-#define LED_ON (true)
+#define LED_ON (!(LED_OFF))
 // Note that all durations should have a unique length, because we take advantage of that.
 #define DOT_DURATION_MS 150U
 #define DASH_DURATION_MS (3U * DOT_DURATION_MS)
@@ -439,7 +441,8 @@ static void logic_task(void *arg)
                         printMorseDebug();
                     }
                 }
-                // Space: Store Morse symbol and space in outputBuffer and morseState changes to CHARACTER_DONE.
+                // Space: Store Morse symbol and space in outputBuffer, if there's enough room and the symbol is valid.
+                // morseState changes to CHARACTER_DONE.
                 else if (symbol == SPACE)
                 {
                     // The Morse symbol is only stored if it's actually a valid Morse symbol,
@@ -447,6 +450,7 @@ static void logic_task(void *arg)
                     // room for it as well as two spaces, '\n' and '\0' after it.
                     const char c = morseToChar(current_morse);
                     const size_t morseLength = strlen(current_morse);
+
                     if (!sendMessage && '\0' != c && bufferIndex <= OUTPUT_BUFFER_SIZE - (morseLength + 4))
                     {
                         for (size_t i = 0; i < morseLength; ++i)
@@ -456,6 +460,14 @@ static void logic_task(void *arg)
                         outputBuffer[bufferIndex++] = SPACE;
                         outputBuffer[bufferIndex] = '\0';
                     }
+                    // Sound the buzzer at a higher pitch and for a shorter time than send success sound
+                    // to signal that the Morse symbol was discarded.
+                    else
+                    {
+                        // Note: This implementation is blocking.
+                        buzzer_play_tone(BUZZER_FREQ_HIGH_HZ, BUZZER_FAIL_DURATION_MS);
+                    }
+
                     current_morse[0] = '\0';
                     morse_index = 0;
                     morseState = CHARACTER_DONE;
@@ -897,7 +909,8 @@ static int sendViaUsb()
     // Result is greater than zero when data was sent successfully.
     if (bytesWritten > 0)
     {
-        buzzer_play_tone(BUZZER_FREQ_HZ, CONFIRM_DURATION_MS); // Note: This implementation is blocking.
+        // Note: This implementation is blocking.
+        buzzer_play_tone(BUZZER_FREQ_LOW_HZ, BUZZER_CONFIRM_DURATION_MS);
     }
 
     return bytesWritten;
