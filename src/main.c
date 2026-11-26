@@ -230,7 +230,6 @@ static char current_morse[MORSE_BUFFER_SIZE] = ""; // Temporary buffer for one M
 static volatile bool b1_pressed = false;
 static volatile bool b2_pressed = false;
 static volatile bool b2_long_press = false;
-static volatile bool both_pressed = false; // Both buttons are pressed at the same time.
 static volatile TickType_t b1_press_time = NO_TIME;
 static volatile TickType_t b2_press_time = NO_TIME;
 static volatile bool b1_down = false; // True if button 1 is being pressed down.
