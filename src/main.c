@@ -26,8 +26,7 @@
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
 #define DEBUG_PRINT_INTERVAL_MS 1000U // How often the sensor debug line is repeated while the symbol stays the same.
-#define MAX_TIME_BETWEEN_MS 250U      // If the time between pressing one button and then pressing the other is shorter than this,
-// then both buttons are being pressed.
+#define HOLD_TO_SEND_MS 2000U      // Duration button 2 must be pressed to insert a newline and send.
 
 // Accelerometer definitions.
 #define NO_ACCEL_VALUE (-100.0f)
@@ -262,15 +261,7 @@ static void gpio_callback(uint gpio, uint32_t events)
 
             if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
             {
-                // Checks if button 2 was pressed around the same time as button 1.
-                if (b2_down || (time_now - b2_press_time < pdMS_TO_TICKS(MAX_TIME_BETWEEN_MS)))
-                {
-                    both_pressed = true; // If it was then both buttons were pressed.
-                }
-                else
-                {
-                    b1_pressed = true; // Else only button 1 was pressed.
-                }
+                b1_pressed = true;
             }
         }
     }
@@ -292,14 +283,14 @@ static void gpio_callback(uint gpio, uint32_t events)
 
             if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
             {
-                // Checks if button 1 was pressed around the same time as button 2.
-                if (b1_down || (time_now - b1_press_time < pdMS_TO_TICKS(MAX_TIME_BETWEEN_MS)))
+                // Checks if button 2 was pressed for a long enough time to do a different function.
+                if (press_duration >= pdMS_TO_TICKS(HOLD_TO_SEND_MS))
                 {
-                    both_pressed = true; // If it was then both buttons were pressed.
+                    b2_long_press = true; // Long press: insert newline and send if ready.
                 }
                 else
                 {
-                    b2_pressed = true; // Else only button 2 was pressed.
+                    b2_pressed = true; // Short press: toggle input mode.
                 }
             }
         }
@@ -384,13 +375,11 @@ static void logic_task(void *arg)
 
     while (1)
     {
-        // Both buttons: Inserts a newline if preceded by two spaces and tries to send the message.
-        if (both_pressed)
+        // Button 2 long press: Inserts a newline if preceded by two spaces and tries to send the message.
+        if (b2_long_press)
         {
             // Clear button press flags.
-            both_pressed = false;
-            b1_pressed = false;
-            b2_pressed = false;
+            b2_long_press = false;
 
             // '\n' can only be inserted and the message sent when preceded by two spaces,
             // i.e. morseState is WORD_DONE, and there is no pending message waiting to be sent.
