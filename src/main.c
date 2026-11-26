@@ -310,34 +310,37 @@ static void comms_task(void *arg)
 {
     (void)arg;
 
-    char rx_buffer[INPUT_BUFFER_SIZE];
+    char line[INPUT_BUFFER_SIZE];
+    size_t lineLen = 0;
 
     while (1)
     {
-        // Check if data has been received from the computer via USB.
         if (tud_cdc_n_connected(CDC_ITF_TX) && tud_cdc_n_available(CDC_ITF_TX))
         {
-            uint32_t count = tud_cdc_n_read(CDC_ITF_TX, rx_buffer, sizeof(rx_buffer) - 1);
-            if (count > 0)
+            char c;
+            while (tud_cdc_n_available(CDC_ITF_TX) && tud_cdc_n_read(CDC_ITF_TX, &c, 1) == 1)
             {
-                rx_buffer[count] = '\0';
-                decodeMessage(rx_buffer);
+                if ('\n' == c)
+                {
+                    line[lineLen] = '\0';
+                    decodeMessage(line);
+                    lineLen = 0;
+                }
+                else if ('\r' != c && lineLen < sizeof(line) - 1)
+                {
+                    line[lineLen++] = c;
+                }
             }
         }
 
-        // If we have an unsent message, try sending it again via USB serial.
         if (sendMessage)
         {
-            int result = sendViaUsb();
-
-            // Result is greater than zero when data was sent successfully.
-            if (result > 0)
+            if (sendViaUsb() > 0)
             {
                 resetMorseStateMachine();
             }
         }
 
-        // Do not remove this.
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
