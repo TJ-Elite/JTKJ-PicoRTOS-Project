@@ -315,6 +315,7 @@ static void comms_task(void *arg)
 
     while (1)
     {
+        // Check if data has been received from the computer via USB.
         if (tud_cdc_n_connected(CDC_ITF_TX) && tud_cdc_n_available(CDC_ITF_TX))
         {
             char c;
@@ -333,14 +334,16 @@ static void comms_task(void *arg)
             }
         }
 
+        // If we have an unsent message, try sending it again via USB serial.
         if (sendMessage)
         {
+            // Result is greater than zero when data was sent successfully.
             if (sendViaUsb() > 0)
             {
                 resetMorseStateMachine();
             }
         }
-
+        // Do not remove this.
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
