@@ -26,7 +26,7 @@
 #define DEBOUNCE_MS 50U
 #define INTEGRATION_TIME_MS 100U
 #define DEBUG_PRINT_INTERVAL_MS 1000U // How often the sensor debug line is repeated while the symbol stays the same.
-#define HOLD_TO_SEND_MS 2000U      // Duration button 2 must be pressed to insert a newline and send.
+#define HOLD_TO_SEND_MS 1000U      // Duration button 2 must be pressed to insert a newline and send.
 
 // Accelerometer definitions.
 #define NO_ACCEL_VALUE (-100.0f)
@@ -386,14 +386,13 @@ static void logic_task(void *arg)
             if (WORD_DONE == morseState && !sendMessage)
             {
                 // Make sure there's room for the '\n' and '\0'.
-                if (bufferIndex >= OUTPUT_BUFFER_MAX_INDEX)
+                if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX)
                 {
-                    bufferIndex = OUTPUT_BUFFER_MAX_INDEX - 1;
-                }
-                outputBuffer[bufferIndex++] = '\n';
-                outputBuffer[bufferIndex] = '\0';
+                    outputBuffer[bufferIndex++] = '\n';
+                    outputBuffer[bufferIndex] = '\0';
 
-                sendMessage = true; // Flag message ready for sending via USB serial.
+                    sendMessage = true; // Flag message ready for sending via USB serial.
+                }
             }
         }
 
@@ -493,12 +492,6 @@ static void logic_task(void *arg)
                     }
 
                     morseState = WORD_DONE;
-                    if (!sendMessage && bufferIndex > 0)
-                    {
-                        outputBuffer[bufferIndex++] = '\n';
-                        outputBuffer[bufferIndex] = '\0';
-                        sendMessage = true;
-                    }
                     printMorseDebug();
                 }
                 break;
