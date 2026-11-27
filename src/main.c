@@ -395,12 +395,19 @@ static void logic_task(void *arg)
     {
         // Button 2 long press:
         // Insert a newline if preceded by two spaces and flag the message ready to be sent.
-        if (BUTTON_PRESSED == gpio_get(SW2_PIN) &&
-            xTaskGetTickCount() - b2_event_time > pdMS_TO_TICKS(LONG_PRESS_MS))
+        taskENTER_CRITICAL();
+        const TickType_t b2_event_time_copy = b2_event_time;
+        const bool b2_long_press_copy = b2_long_press;
+        taskEXIT_CRITICAL();
+        if (!b2_long_press_copy &&
+            BUTTON_PRESSED == gpio_get(SW2_PIN) &&
+            xTaskGetTickCount() - b2_event_time_copy > pdMS_TO_TICKS(LONG_PRESS_MS))
         {
             // Update flags.
+            taskENTER_CRITICAL();
             b2_long_press = true; // Signals ISR to not flag b2_pressed on release.
             b2_pressed = false;   // Clear flag just in case.
+            taskEXIT_CRITICAL();
 
             // '\n' can only be inserted and the message sent when preceded by two spaces,
             // i.e. morseState is WORD_DONE, and there is no pending message waiting to be sent.
@@ -433,9 +440,14 @@ static void logic_task(void *arg)
         }
 
         // Button 1 records the Morse input from the user.
-        if (b1_pressed)
+        taskENTER_CRITICAL();
+        const bool b1_pressed_copy = b1_pressed;
+        taskEXIT_CRITICAL();
+        if (b1_pressed_copy)
         {
+            taskENTER_CRITICAL();
             b1_pressed = false;
+            taskEXIT_CRITICAL();
 
             // Clear the previous symbol and interpret the latest sensor measurement.
             latest_event.symbol = '\0';
@@ -561,9 +573,14 @@ static void logic_task(void *arg)
         }
 
         // Button 2: switches between the two input modes.
-        if (b2_pressed)
+        taskENTER_CRITICAL();
+        const bool b2_pressed_copy = b2_pressed;
+        taskEXIT_CRITICAL();
+        if (b2_pressed_copy)
         {
+            taskENTER_CRITICAL();
             b2_pressed = false;
+            taskEXIT_CRITICAL();
             toggleInputMode();
         }
 
