@@ -232,7 +232,6 @@ static volatile bool b2_pressed = false;
 static volatile bool b2_long_press = false;
 static volatile TickType_t b1_press_time = NO_TIME;
 static volatile TickType_t b2_press_time = NO_TIME;
-static volatile bool b1_down = false; // True if button 1 is being pressed down.
 static volatile bool b2_down = false; // True if button 2 is being pressed down.
 static volatile bool sendMessage = false;
 static volatile morse_event_t latest_event = {'\0', 0};
@@ -251,12 +250,10 @@ static void gpio_callback(uint gpio, uint32_t events)
             if (time_now - b1_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
             {
                 b1_press_time = time_now;
-                b1_down = true;
             }
         }
         else if (events & GPIO_IRQ_EDGE_RISE)
         {
-            b1_down = false;
             TickType_t press_duration = time_now - b1_press_time;
 
             if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
@@ -274,6 +271,7 @@ static void gpio_callback(uint gpio, uint32_t events)
             {
                 b2_press_time = time_now;
                 b2_down = true;
+                b2_long_press = false;
             }
         }
         else if (events & GPIO_IRQ_EDGE_RISE)
@@ -281,18 +279,11 @@ static void gpio_callback(uint gpio, uint32_t events)
             b2_down = false;
             TickType_t press_duration = time_now - b2_press_time;
 
-            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
+            if (!b2_long_press && press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
             {
-                // Checks if button 2 was pressed for a long enough time to do a different function.
-                if (press_duration >= pdMS_TO_TICKS(HOLD_TO_SEND_MS))
-                {
-                    b2_long_press = true; // Long press: insert newline and send if ready.
-                }
-                else
-                {
-                    b2_pressed = true; // Short press: toggle input mode.
-                }
+                b2_pressed = true;
             }
+            b2_long_press = false;
         }
     }
 }
@@ -376,10 +367,9 @@ static void logic_task(void *arg)
     while (1)
     {
         // Button 2 long press: Inserts a newline if preceded by two spaces and tries to send the message.
-        if (b2_long_press)
+        if (b2_down && !b2_long_press && (xTaskGetTickCount() - b2_press_time >= pdMS_TO_TICKS(HOLD_TO_SEND_MS)))
         {
-            // Clear button press flags.
-            b2_long_press = false;
+            b2_long_press = true;
 
             // '\n' can only be inserted and the message sent when preceded by two spaces,
             // i.e. morseState is WORD_DONE, and there is no pending message waiting to be sent.
