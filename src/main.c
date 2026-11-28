@@ -43,9 +43,11 @@
 
 // Buzzer definitions.
 #define BUZZER_FREQ_LOW_HZ 4000U
-#define BUZZER_FREQ_HIGH_HZ ((BUZZER_FREQ_LOW_HZ) + 1000U)
+#define BUZZER_FREQ_MED_HZ ((BUZZER_FREQ_LOW_HZ) + 1000U)
+#define BUZZER_FREQ_HIGH_HZ ((BUZZER_FREQ_MED_HZ) + 1000U)
 #define BUZZER_CONFIRM_DURATION_MS 300U
 #define BUZZER_FAIL_DURATION_MS ((BUZZER_CONFIRM_DURATION_MS) / 2U)
+#define BUZZER_LONG_FAIL_DURATION_MS (2U * (BUZZER_CONFIRM_DURATION_MS))
 
 // LED definitions.
 #define LED_OFF (false)
@@ -254,9 +256,7 @@ static void gpio_callback(uint gpio, uint32_t events)
         }
         else if (events & GPIO_IRQ_EDGE_RISE)
         {
-            TickType_t press_duration = time_now - b1_press_time;
-
-            if (press_duration > pdMS_TO_TICKS(DEBOUNCE_MS))
+            if (time_now - b1_press_time > pdMS_TO_TICKS(DEBOUNCE_MS))
             {
                 b1_pressed = true;
             }
@@ -367,30 +367,62 @@ static void logic_task(void *arg)
     while (1)
     {
         // Button 2 long press: Inserts a newline if preceded by two spaces and tries to send the message.
-        if (b2_down && !b2_long_press && (xTaskGetTickCount() - b2_press_time >= pdMS_TO_TICKS(HOLD_TO_SEND_MS)))
+        taskENTER_CRITICAL();
+        const TickType_t b2_press_time_copy = b2_press_time;
+        const bool b2_long_press_copy = b2_long_press;
+        const bool b2_down_copy = b2_down;
+        taskEXIT_CRITICAL();
+        
+        if (b2_down_copy && !b2_long_press_copy && (xTaskGetTickCount() - b2_press_time_copy >= pdMS_TO_TICKS(HOLD_TO_SEND_MS)))
         {
-            b2_long_press = true;
+            // Update flags.
+            taskENTER_CRITICAL();
+            b2_long_press = true; // Signals ISR to not flag b2_pressed on release.
+            b2_pressed = false;   // Clear flag just in case.
+            taskEXIT_CRITICAL();
 
             // '\n' can only be inserted and the message sent when preceded by two spaces,
             // i.e. morseState is WORD_DONE, and there is no pending message waiting to be sent.
             if (WORD_DONE == morseState && !sendMessage)
             {
                 // Make sure there's room for the '\n' and '\0'.
-                if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX)
+                if (bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
                 {
                     outputBuffer[bufferIndex++] = '\n';
                     outputBuffer[bufferIndex] = '\0';
 
                     sendMessage = true; // Flag message ready for sending via USB serial.
                 }
+                // If buffer is full replace last SPACE with a newline, so that the message can be sent safely without overflow.
+                else if (bufferIndex > 0 && outputBuffer[bufferIndex - 1] == SPACE)
+                {
+                    outputBuffer[bufferIndex - 1] = '\n';
+                    outputBuffer[bufferIndex] = '\0';
+
+                    sendMessage = true;
+                }
+                // If message can't be sent for some reason, reset the Morse state machine and sound the buzzer.
+                else
+                {
+                    resetMorseStateMachine();
+
+                    // Note: This implementation is blocking.
+                    buzzer_play_tone(BUZZER_FREQ_HIGH_HZ, BUZZER_LONG_FAIL_DURATION_MS);
+                }
             }
         }
 
         // Button 1 records the Morse input from the user.
-        if (b1_pressed)
+        taskENTER_CRITICAL();
+        const bool b1_pressed_copy = b1_pressed;
+        taskEXIT_CRITICAL();
+        
+        if (b1_pressed_copy)   
         {
+            taskENTER_CRITICAL();
             b1_pressed = false;
-
+            taskEXIT_CRITICAL();
+            
             // Clear the previous symbol and interpret the latest sensor measurement.
             latest_event.symbol = '\0';
             interpretInput();
@@ -449,7 +481,7 @@ static void logic_task(void *arg)
                     else
                     {
                         // Note: This implementation is blocking.
-                        buzzer_play_tone(BUZZER_FREQ_HIGH_HZ, BUZZER_FAIL_DURATION_MS);
+                        buzzer_play_tone(BUZZER_FREQ_MED_HZ, BUZZER_FAIL_DURATION_MS);
                     }
 
                     current_morse[0] = '\0';
@@ -474,7 +506,7 @@ static void logic_task(void *arg)
                 // If space, morseState changes to WORD_DONE.
                 else if (symbol == SPACE)
                 {
-                    // Put the second space in the buffer as long as a message isn't currently being send and there's also room for '\n' and '\0' after.
+                    // Put the second space in the buffer as long as a message isn't currently being sent and there's also room for '\n' and '\0' after.
                     if (!sendMessage && bufferIndex < OUTPUT_BUFFER_MAX_INDEX - 1)
                     {
                         outputBuffer[bufferIndex++] = SPACE;
@@ -515,9 +547,14 @@ static void logic_task(void *arg)
         }
 
         // Button 2: switches between the two input modes.
-        if (b2_pressed)
+        taskENTER_CRITICAL();
+        const bool b2_pressed_copy = b2_pressed;
+        taskEXIT_CRITICAL();
+        if (b2_pressed_copy)
         {
+            taskENTER_CRITICAL();
             b2_pressed = false;
+            taskEXIT_CRITICAL();
             toggleInputMode();
         }
 
@@ -540,7 +577,7 @@ static void ui_task(void *arg)
     {
         if (newTextToPrint)
         {
-            newTextToPrint = !newTextToPrint;
+            newTextToPrint = false;
             printToScreen(receivedText);
 
             // "Erase" the written string if Morse playback has already concluded.
@@ -968,7 +1005,7 @@ static void decodeMessage(const char *message)
                 }
 
                 char c = morseToChar(symbol);
-                receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : INVALID_MORSE;
+                receivedText[textIndex++] = ('\0' != c) ? c : INVALID_MORSE;
             }
 
             // Two spaces separate words.
@@ -1017,7 +1054,7 @@ static void decodeMessage(const char *message)
         char c = morseToChar(symbol);
         if (textIndex < RECEIVED_TEXT_SIZE - 1)
         {
-            receivedText[textIndex++] = ('\0' != c) ? morseToChar(symbol) : INVALID_MORSE;
+            receivedText[textIndex++] = ('\0' != c) ? c : INVALID_MORSE;
         }
     }
 
